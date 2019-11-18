@@ -37,6 +37,8 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "hw/intc/intc.h"
+#include "migration/cuju-kvm-share-mem.h"
+#include "migration/cuju-ft-trans-file.h"
 
 #ifdef CONFIG_SPICE
 #include <spice/enums.h>
@@ -977,6 +979,7 @@ void hmp_info_tpm(Monitor *mon, const QDict *qdict)
 void hmp_quit(Monitor *mon, const QDict *qdict)
 {
     monitor_suspend(mon);
+    aio_ft_pause(0);
     qmp_quit(NULL);
 }
 
@@ -1265,6 +1268,11 @@ void hmp_snapshot_delete_blkdev_internal(Monitor *mon, const QDict *qdict)
 void hmp_migrate_cancel(Monitor *mon, const QDict *qdict)
 {
     qmp_migrate_cancel(NULL);
+}
+
+void hmp_cuju_migrate_cancel(Monitor *mon, const QDict *qdict)
+{
+    qmp_cuju_migrate_cancel(NULL);
 }
 
 void hmp_migrate_incoming(Monitor *mon, const QDict *qdict)
@@ -1679,16 +1687,17 @@ void hmp_migrate(Monitor *mon, const QDict *qdict)
     bool detach = qdict_get_try_bool(qdict, "detach", false);
     bool blk = qdict_get_try_bool(qdict, "blk", false);
     bool inc = qdict_get_try_bool(qdict, "inc", false);
+    bool cuju = qdict_get_try_bool(qdict, "cuju", false);
     const char *uri = qdict_get_str(qdict, "uri");
     Error *err = NULL;
 
-    qmp_migrate(uri, !!blk, blk, !!inc, inc, false, false, &err);
+    qmp_migrate(uri, !!blk, blk, !!inc, inc, false, false, !!cuju, cuju, &err);
     if (err) {
         error_report_err(err);
         return;
     }
 
-    if (!detach) {
+    if (!detach && !cuju) {
         HMPMigrationStatus *status;
 
         if (monitor_suspend(mon) < 0) {
@@ -2570,3 +2579,42 @@ void hmp_hotpluggable_cpus(Monitor *mon, const QDict *qdict)
 
     qapi_free_HotpluggableCPUList(saved);
 }
+
+void hmp_cuju_failover(Monitor *mon, const QDict *qdict)
+{
+    Error *err = NULL;
+
+    qmp_cuju_failover(&err);
+    if (err) {
+        error_report_err(err);
+        return;
+    }
+
+}
+
+void hmp_cuju_adjust_epoch(Monitor *mon, const QDict *qdict)
+{
+    unsigned long epoch = qdict_get_try_int(qdict, "epoch", 5);
+    Error *err = NULL;
+
+    qmp_cuju_adjust_epoch(epoch, &err);
+    if (err) {
+        error_report_err(err);
+        return;
+    }
+}
+
+void hmp_cuju_ft_started(Monitor *mon, const QDict *qdict) 
+{
+    monitor_printf(mon, "ft_started: %d\n", show_ft_started());
+
+    return;
+}
+
+void hmp_cuju_ft_mode(Monitor *mon, const QDict *qdict)
+{
+    monitor_printf(mon, "cuju_ft_mode: %d\n", (unsigned int)cuju_ft_mode);
+    
+    return;
+}
+

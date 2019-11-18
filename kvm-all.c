@@ -15,7 +15,7 @@
 
 #include "qemu/osdep.h"
 #include <sys/ioctl.h>
-
+#include <malloc.h>
 #include <linux/kvm.h>
 
 #include "qemu-common.h"
@@ -30,14 +30,21 @@
 #include "exec/gdbstub.h"
 #include "sysemu/kvm_int.h"
 #include "qemu/bswap.h"
+#include "qemu/bitops.h"
 #include "exec/memory.h"
 #include "exec/ram_addr.h"
 #include "exec/address-spaces.h"
 #include "qemu/event_notifier.h"
 #include "trace.h"
 #include "hw/irq.h"
+#include "migration/cuju-kvm-share-mem.h"
 
 #include "hw/boards.h"
+
+// sync with the one in qemu
+#define KVM_SHM_INIT_INDEX  1
+
+extern bool ft_stopped_cpus;
 
 /* This check must be after config-host.h is included */
 #ifdef CONFIG_EVENTFD
@@ -60,6 +67,9 @@
 #endif
 
 #define KVM_MSI_HASHTAB_SIZE    256
+
+// sync with the one in qemu
+#define KVM_SHM_INIT_INDEX  1
 
 struct KVMParkedVcpu {
     unsigned long vcpu_id;
@@ -101,6 +111,8 @@ struct KVMState
 #endif
     KVMMemoryListener memory_listener;
     QLIST_HEAD(, KVMParkedVcpu) kvm_parked_vcpus;
+
+    int bitmap_count;
 };
 
 KVMState *kvm_state;
@@ -212,6 +224,19 @@ static KVMSlot *kvm_lookup_overlapping_slot(KVMMemoryListener *kml,
     }
 
     return found;
+}
+
+void kvm_slots_dump(void)
+{
+	KVMState *s = kvm_state;
+	KVMMemoryListener *kml = &s->memory_listener;
+    int i;
+
+	for (i = 0; i < s->nr_slots; i++) {
+        KVMSlot *mem = &kml->slots[i];
+        printf("%s %10lx %10lx\n", __func__, mem->start_addr,
+            mem->start_addr + mem->memory_size);
+    }
 }
 
 int kvm_physical_memory_addr_from_host(KVMState *s, void *ram,
@@ -876,6 +901,7 @@ static void kvm_log_sync(MemoryListener *listener,
     int r;
 
     r = kvm_physical_sync_dirty_bitmap(kml, section);
+
     if (r < 0) {
         abort();
     }
@@ -1752,6 +1778,8 @@ static int kvm_init(MachineState *ms)
         kvm_irqchip_create(ms, s);
     }
 
+    s->bitmap_count = KVM_DIRTY_BITMAP_INIT_COUNT;
+
     kvm_state = s;
 
     if (kvm_eventfds_allowed) {
@@ -1867,7 +1895,8 @@ static void do_kvm_cpu_synchronize_state(CPUState *cpu, run_on_cpu_data arg)
 void kvm_cpu_synchronize_state(CPUState *cpu)
 {
     if (!cpu->kvm_vcpu_dirty) {
-        run_on_cpu(cpu, do_kvm_cpu_synchronize_state, RUN_ON_CPU_NULL);
+        //run_on_cpu(cpu, do_kvm_cpu_synchronize_state, RUN_ON_CPU_NULL);
+		do_kvm_cpu_synchronize_state(cpu, RUN_ON_CPU_NULL);
     }
 }
 
@@ -2011,9 +2040,17 @@ int kvm_cpu_exec(CPUState *cpu)
                 break;
             }
             break;
+        case KVM_EXIT_HRTIMER:
+            kvmft_tick_func();
+            ret = EXCP_FT;
+            break;
         default:
             DPRINTF("kvm_arch_handle_exit\n");
             ret = kvm_arch_handle_exit(cpu, run);
+            break;
+        }
+        if (ret == 0 && ft_stopped_cpus) {
+            ret = EXCP_FT;
             break;
         }
     } while (ret == 0);

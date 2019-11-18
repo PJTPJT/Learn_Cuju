@@ -69,7 +69,12 @@ struct QEMUTimer {
     void *opaque;
     QEMUTimer *next;
     int scale;
+
+    //For CUJU-FT
+    bool survive_iohandler_pause;
 };
+
+void qemu_timer_survive_iohandler_pause(QEMUTimer *ts, bool survive);
 
 extern QEMUTimerListGroup main_loop_tlg;
 

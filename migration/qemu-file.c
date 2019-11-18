@@ -32,29 +32,6 @@
 #include "migration/qemu-file.h"
 #include "trace.h"
 
-#define IO_BUF_SIZE 32768
-#define MAX_IOV_SIZE MIN(IOV_MAX, 64)
-
-struct QEMUFile {
-    const QEMUFileOps *ops;
-    const QEMUFileHooks *hooks;
-    void *opaque;
-
-    int64_t bytes_xfer;
-    int64_t xfer_limit;
-
-    int64_t pos; /* start of buffer when writing, end of buffer
-                    when reading */
-    int buf_index;
-    int buf_size; /* 0 when writing */
-    uint8_t buf[IO_BUF_SIZE];
-
-    struct iovec iov[MAX_IOV_SIZE];
-    unsigned int iovcnt;
-
-    int last_error;
-};
-
 /*
  * Stop a file from being read/written - not all backing files can do this
  * typically only sockets can.
@@ -99,6 +76,7 @@ QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops)
 
     f->opaque = opaque;
     f->ops = ops;
+	f->buf = g_new0(uint8_t, IO_BUF_SIZE);
     return f;
 }
 
@@ -143,6 +121,33 @@ void qemu_fflush(QEMUFile *f)
 {
     ssize_t ret = 0;
     ssize_t expect = 0;
+
+    //for CUJU-FT
+    if (f->ops->put_buffer) {
+        if (f->buf_index > 0) {
+            unsigned long off = 0;
+
+            while (off < f->buf_index) {
+                long len = f->ops->put_buffer(f->opaque, f->buf + off, f->pos, f->buf_index - off);
+                if (len <= 0) {
+                    printf("%s put_buffer error %ld.\n", __func__, len);
+                    abort();
+                } else
+                    off += len;
+            }
+
+            f->pos += f->buf_index;
+
+            if (f->free_buf_on_flush) {
+                f->buf = g_malloc(IO_BUF_SIZE);
+                f->pos = 0;
+            }
+
+            f->buf_index = 0;
+            f->iovcnt = 0;
+        }
+        return;
+    }
 
     if (!qemu_file_is_writable(f)) {
         return;
@@ -299,7 +304,9 @@ int qemu_fclose(QEMUFile *f)
     if (f->last_error) {
         ret = f->last_error;
     }
-    g_free(f);
+    // TODO (CUJU)
+    // We need to free it but it would cause SIGSEGV when failed over(CUJU)
+    //g_free(f);
     trace_qemu_file_fclose();
     return ret;
 }
@@ -702,3 +709,26 @@ void qemu_file_set_blocking(QEMUFile *f, bool block)
         f->ops->set_blocking(f->opaque, block);
     }
 }
+/*move to savevm.c
+QEMUFile *cuju_qemu_fopen_ft_trans(int s_fd, int c_fd, int ram_fd, int ram_hdr_fd)
+{
+    QEMUFileSocketTrans *t = g_malloc0(sizeof(QEMUFileSocketTrans));
+    QEMUFileSocket *s = g_malloc0(sizeof(QEMUFileSocket));
+
+    t->s = s;
+    t->fd = s_fd;
+    t->e = qemu_add_vm_change_state_handler(socket_trans_resume, t);
+
+    s->fd = c_fd;
+    s->file = cuju_qemu_fopen_ops_ft_trans(t, socket_trans_put_buffer,
+                                        socket_trans_get_buffer, NULL,
+                                        socket_trans_get_ready,
+                                        migrate_fd_wait_for_unfreeze,
+                                        socket_trans_close, 0, ram_fd, ram_hdr_fd);
+    // TODO uncomment, otherwise will crash
+    // moved to outside
+    socket_set_nonblock(s->fd);
+
+    return s->file;
+}
+*/

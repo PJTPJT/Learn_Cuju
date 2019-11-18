@@ -894,9 +894,10 @@ static void virtio_net_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
     size_t s;
     struct iovec *iov, *iov2;
     unsigned int iov_cnt;
+    unsigned int head;
 
     for (;;) {
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }
@@ -1110,6 +1111,7 @@ static ssize_t virtio_net_receive(NetClientState *nc, const uint8_t *buf, size_t
     struct virtio_net_hdr_mrg_rxbuf mhdr;
     unsigned mhdr_cnt = 0;
     size_t offset, i, guest_offset;
+    unsigned int head;
 
     if (!virtio_net_can_receive(nc)) {
         return -1;
@@ -1132,7 +1134,7 @@ static ssize_t virtio_net_receive(NetClientState *nc, const uint8_t *buf, size_t
 
         total = 0;
 
-        elem = virtqueue_pop(q->rx_vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(q->rx_vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             if (i) {
                 virtio_error(vdev, "virtio-net unexpected empty queue: "
@@ -1230,6 +1232,7 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
     VirtQueueElement *elem;
     int32_t num_packets = 0;
     int queue_index = vq2q(virtio_get_queue_index(q->tx_vq));
+    unsigned int head;
     if (!(vdev->status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         return num_packets;
     }
@@ -1245,7 +1248,7 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
         struct iovec sg[VIRTQUEUE_MAX_SIZE], sg2[VIRTQUEUE_MAX_SIZE + 1], *out_sg;
         struct virtio_net_hdr_mrg_rxbuf mhdr;
 
-        elem = virtqueue_pop(q->tx_vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(q->tx_vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }
@@ -1298,7 +1301,9 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
             out_sg = sg;
         }
 
-        ret = qemu_sendv_packet_async(qemu_get_subqueue(n->nic, queue_index),
+        //ret = qemu_sendv_packet_async(qemu_get_subqueue(n->nic, queue_index),
+        //                              out_sg, out_num, virtio_net_tx_complete);
+        ret = qemu_sendv_packet_async_proxy(qemu_get_subqueue(n->nic, queue_index),
                                       out_sg, out_num, virtio_net_tx_complete);
         if (ret == 0) {
             virtio_queue_set_notification(q->tx_vq, 0);

@@ -474,4 +474,13 @@ static inline bool aio_context_in_iothread(AioContext *ctx)
  */
 void aio_context_setup(AioContext *ctx);
 
+//For CUJU-FT
+void qemu_iohandler_ft_pause(bool pause);
+bool qemu_iohandler_is_ft_paused(void);
+void qemu_set_fd_survive_ft_pause(int fd, bool survive);
+void aio_ft_pause(bool pause);
+bool aio_is_ft_paused(void);
+void aio_set_fd_survive_ft_pause(AioContext *ctx, int fd, bool survive);
+void qemu_bh_set_mig_survive(QEMUBH *bh, bool survive);
+
 #endif

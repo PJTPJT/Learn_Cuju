@@ -22,6 +22,21 @@
 #include "qapi-types.h"
 #include "exec/cpu-common.h"
 #include "qemu/coroutine_int.h"
+#include "io/channel-socket.h"
+
+#define CUJU_FT_DEV_INIT_BUF (8*1024*1024)
+#define CUJU_FT_DEV_STATE_ENTRY_SIZE 50
+
+struct CUJUFTDev
+{
+    QEMUFile *ft_dev_file;
+    void *ft_dev_buf;
+    int ft_dev_put_off;
+    int state_entry_num;                                // number of dirtied device states
+    void *state_entries[CUJU_FT_DEV_STATE_ENTRY_SIZE];       // pointers for dirtied SaveStateEntry
+    int state_entry_begins[CUJU_FT_DEV_STATE_ENTRY_SIZE];    // beginning offsets of SaveStateEntrys in ft_dev_buf
+    int state_entry_lens[CUJU_FT_DEV_STATE_ENTRY_SIZE];
+};
 
 #define QEMU_VM_FILE_MAGIC           0x5145564d
 #define QEMU_VM_FILE_VERSION_COMPAT  0x00000002
@@ -36,8 +51,16 @@
 #define QEMU_VM_VMDESCRIPTION        0x06
 #define QEMU_VM_CONFIGURATION        0x07
 #define QEMU_VM_COMMAND              0x08
+/* for cuju */
+#define QEMU_VM_SECTION_RAM          0x0c
+#define QEMU_VM_SECTION_DEV          0x0d
+/* */
 #define QEMU_VM_SECTION_FOOTER       0x7e
 
+typedef uint64_t ram_addr_t;
+
+extern int qio_ft_sock_fd;
+extern bool backup_die;
 struct MigrationParams {
     bool blk;
     bool shared;
@@ -116,6 +139,11 @@ struct MigrationIncomingState {
 
     /* See savevm.c */
     LoadStateEntry_Head loadvm_handlers;
+
+    // CUJU
+    Coroutine *cuju_incoming_co;
+    QemuThread cuju_incoming_thread;
+    QEMUFile **cuju_file;
 };
 
 MigrationIncomingState *migration_incoming_get_current(void);
@@ -185,6 +213,69 @@ struct MigrationState
 
     /* The last error that occurred */
     Error *error;
+
+    /* For CUJU */
+    int ft_state;
+    int64_t bandwidth_limit;
+    QEMUFile *file;
+    int fd;
+    int cur_off;    // the corresponding offset for the shared resources
+    uint64_t trans_serial;
+    volatile uint64_t run_serial;
+    void *ft_event_tap_net_list;  // packets of current epoch
+    bool net_list_empty;
+    void *ft_event_tap_list;      // currently buffered output
+    QEMUFile **fs;
+    int *ram_fds;
+    // ram length of user and kernel
+    // send to receiver with COMMIT1
+    int ram_len;
+
+    // in cuju_migration_channel_connect
+    int (*get_error)(MigrationState *s);
+    int (*close)(MigrationState *s);
+    int (*write)(MigrationState *s, const void *buff, size_t size);
+    int (*read)(MigrationState *s, const void *buff, size_t size);
+
+    void *bh;       /* for tran-thread to notify main-io-thread */
+    void *timer_bh; /* for vcpu-thread to notify main-io-thread */
+    void *flush_bh;
+    bool flush_vs_commit1;
+
+    unsigned int dirty_page_tracking_logs_off;
+
+    struct CUJUFTDev *ft_dev;
+    QTAILQ_ENTRY(MigrationState) nodes[4];
+#ifdef CONFIG_KVMFT_USERSPACE_TRANSFER
+    unsigned long *dirty_pfns;
+#endif
+    int dirty_pfns_len;
+
+    void *virtio_blk_temp_list;
+
+    double time;
+    double run_sched_time;
+    double run_real_start_time;
+    double snapshot_start_time;
+    double snapshot_finish_time;
+    double transfer_start_time;
+    double transfer_finish_time;
+    double transfer_real_start_time;
+    double transfer_real_finish_time;
+    char time_buf[256];
+    int time_buf_off;
+};
+
+struct dirty_page_tracking_log {
+    unsigned int page_nums;
+    unsigned int transfer_time_us;
+};
+#define DIRTY_PAGE_TRACKING_LOG_SIZE    10
+struct dirty_page_tracking_logs {
+    unsigned int total_page_nums;
+    unsigned int total_transfer_time_us;
+    unsigned int log_off;
+    struct dirty_page_tracking_log logs[DIRTY_PAGE_TRACKING_LOG_SIZE];
 };
 
 void migrate_set_state(int *state, int old_state, int new_state);
@@ -233,7 +324,11 @@ void rdma_start_incoming_migration(const char *host_port, Error **errp);
 
 void migrate_fd_error(MigrationState *s, const Error *error);
 
+int migrate_fd_get_buffer(void *opaque, uint8_t *data, int64_t pos, size_t size);
+
 void migrate_fd_connect(MigrationState *s);
+
+void migrate_fd_wait_for_unfreeze(void *opaque);
 
 void add_migration_state_change_notifier(Notifier *notify);
 void remove_migration_state_change_notifier(Notifier *notify);
@@ -294,6 +389,8 @@ void migrate_add_blocker(Error *reason);
  */
 void migrate_del_blocker(Error *reason);
 
+void __migrate_init(void);
+
 bool migrate_postcopy_ram(void);
 bool migrate_zero_blocks(void);
 
@@ -306,6 +403,7 @@ int xbzrle_decode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen);
 int migrate_use_xbzrle(void);
 int64_t migrate_xbzrle_cache_size(void);
 bool migrate_colo_enabled(void);
+bool migrate_cuju_enabled(void);
 
 int64_t xbzrle_cache_resize(int64_t new_size);
 
@@ -359,4 +457,37 @@ int ram_save_queue_pages(MigrationState *ms, const char *rbname,
 PostcopyState postcopy_state_get(void);
 /* Set the state and return the old state */
 PostcopyState postcopy_state_set(PostcopyState new_state);
+
+/* for cuju */
+void cuju_tcp_start_incoming_migration(const char *host_port, Error **errp);
+
+void cuju_tcp_start_outgoing_migration(MigrationState *s, const char *host_port, Error **errp);
+
+void cuju_migration_channel_process_incoming(MigrationState *s,
+                                        QIOChannelSocket **ioc);
+
+void cuju_migration_fd_process_incoming(QEMUFile **f);
+
+void cuju_migration_channel_connect(MigrationState *s,
+                               QIOChannelSocket **ioc,
+                               const char *hostname);
+
+void alloc_ft_dev(MigrationState *s);
+int migrate_save_device_states_to_memory_advanced(void *opaque, int more);
+int qemu_savevm_trans_complete_precopy_advanced(struct CUJUFTDev *ftdev, int more);
+void qemu_savevm_state_complete_precopy_part1(QEMUFile *f);
+void qemu_savevm_state_complete_precopy_part2(QEMUFile *f);
+void migrate_ft_trans_send_device_state_header(struct CUJUFTDev *ftdev, QEMUFile *f);
+int qemu_loadvm_dev(QEMUFile *f);
+
+MigrationState *migrate_by_index(int index);
+
+void kvmft_calc_ram_hash(void);
+void dirty_page_tracking_logs_start_transfer(MigrationState *s);
+void dirty_page_tracking_logs_start_flush_output(MigrationState *s);
+void dirty_page_tracking_logs_commit(MigrationState *s);
+unsigned int dirty_page_tracking_logs_max(int bound_ms);
+
+void kvmft_tick_func(void);
+
 #endif

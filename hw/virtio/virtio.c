@@ -534,7 +534,7 @@ int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 static bool virtqueue_map_desc(VirtIODevice *vdev, unsigned int *p_num_sg,
                                hwaddr *addr, struct iovec *iov,
                                unsigned int max_num_sg, bool is_write,
-                               hwaddr pa, size_t sz)
+                               hwaddr pa, size_t sz, bool defer_write_map)
 {
     bool ok = false;
     unsigned num_sg = *p_num_sg;
@@ -554,10 +554,12 @@ static bool virtqueue_map_desc(VirtIODevice *vdev, unsigned int *p_num_sg,
             goto out;
         }
 
-        iov[num_sg].iov_base = cpu_physical_memory_map(pa, &len, is_write);
-        if (!iov[num_sg].iov_base) {
-            virtio_error(vdev, "virtio: bogus descriptor or out of resources");
-            goto out;
+        if(!defer_write_map) {
+            iov[num_sg].iov_base = cpu_physical_memory_map(pa, &len, is_write);
+            if (!iov[num_sg].iov_base) {
+                virtio_error(vdev, "virtio: bogus descriptor or out of resources");
+                goto out;
+            }
         }
 
         iov[num_sg].iov_len = len;
@@ -632,6 +634,24 @@ void virtqueue_map(VirtQueueElement *elem)
                         VIRTQUEUE_MAX_SIZE, 0);
 }
 
+void virtqueue_map_write(VirtQueueElement *elem)
+{
+    virtqueue_map_iovec(elem->in_sg, elem->in_addr, &elem->in_num,
+                        VIRTQUEUE_MAX_SIZE, 1);
+}
+
+void virtqueue_mark_dirty(struct iovec *sg, hwaddr *addr, size_t num_sg)
+{
+    unsigned int i, j;
+    hwaddr len;
+
+    for (i = 0; i < num_sg; i++) {
+        len = sg[i].iov_len;
+        for (j = 0; j < len; j += 4096)
+            kvm_shmem_mark_page_dirty(sg[i].iov_base + j, (addr[i] + j) >> TARGET_PAGE_BITS);
+    }
+}
+
 static void *virtqueue_alloc_element(size_t sz, unsigned out_num, unsigned in_num)
 {
     VirtQueueElement *elem;
@@ -653,7 +673,7 @@ static void *virtqueue_alloc_element(size_t sz, unsigned out_num, unsigned in_nu
     return elem;
 }
 
-void *virtqueue_pop(VirtQueue *vq, size_t sz)
+void *virtqueue_pop(VirtQueue *vq, size_t sz, unsigned int *head_out, bool defer_write_map)
 {
     unsigned int i, head, max;
     hwaddr desc_pa = vq->vring.desc;
@@ -694,6 +714,7 @@ void *virtqueue_pop(VirtQueue *vq, size_t sz)
     }
 
     i = head;
+    *head_out = head;
     vring_desc_read(vdev, &desc, desc_pa, i);
     if (desc.flags & VRING_DESC_F_INDIRECT) {
         if (desc.len % sizeof(VRingDesc)) {
@@ -716,7 +737,10 @@ void *virtqueue_pop(VirtQueue *vq, size_t sz)
             map_ok = virtqueue_map_desc(vdev, &in_num, addr + out_num,
                                         iov + out_num,
                                         VIRTQUEUE_MAX_SIZE - out_num, true,
-                                        desc.addr, desc.len);
+                                        desc.addr, desc.len, defer_write_map);
+            //if (defer_write_map && map_ok) {
+            //    virtqueue_undo_map_desc(out_num, in_num, iov);
+            //}
         } else {
             if (in_num) {
                 virtio_error(vdev, "Incorrect order for descriptors");
@@ -724,7 +748,7 @@ void *virtqueue_pop(VirtQueue *vq, size_t sz)
             }
             map_ok = virtqueue_map_desc(vdev, &out_num, addr, iov,
                                         VIRTQUEUE_MAX_SIZE, false,
-                                        desc.addr, desc.len);
+                                        desc.addr, desc.len, false);
         }
         if (!map_ok) {
             goto err_undo_map;
@@ -846,6 +870,114 @@ void qemu_put_virtqueue_element(QEMUFile *f, VirtQueueElement *elem)
         data.out_sg[i].iov_len = elem->out_sg[i].iov_len;
     }
     qemu_put_buffer(f, (uint8_t *)&data, sizeof(VirtQueueElementOld));
+}
+
+void *virtqueue_get(VirtQueue *vq, size_t sz, unsigned int head)
+{
+    unsigned int i, max;
+    hwaddr desc_pa = vq->vring.desc;
+    VirtIODevice *vdev = vq->vdev;
+    VirtQueueElement *elem;
+    unsigned out_num, in_num;
+    hwaddr addr[VIRTQUEUE_MAX_SIZE];
+    struct iovec iov[VIRTQUEUE_MAX_SIZE];
+    VRingDesc desc;
+    int rc;
+
+    if (unlikely(vdev->broken)) {
+        return NULL;
+    }
+    //if (virtio_queue_empty(vq)) {
+    //    return NULL;
+    //}
+    /* Needed after virtio_queue_empty(), see comment in
+     * virtqueue_num_heads(). */
+    smp_rmb();
+
+    /* When we start there are none of either input nor output. */
+    out_num = in_num = 0;
+
+    max = vq->vring.num;
+
+    //if (vq->inuse >= vq->vring.num) {
+    //    virtio_error(vdev, "Virtqueue size exceeded");
+    //    return NULL;
+    //}
+
+    //if (virtio_vdev_has_feature(vdev, VIRTIO_RING_F_EVENT_IDX)) {
+    //    vring_set_avail_event(vq, vq->last_avail_idx);
+    //}
+
+    i = head;
+    vring_desc_read(vdev, &desc, desc_pa, i);
+    if (desc.flags & VRING_DESC_F_INDIRECT) {
+        if (desc.len % sizeof(VRingDesc)) {
+            virtio_error(vdev, "Invalid size for indirect buffer table");
+            return NULL;
+        }
+
+        /* loop over the indirect descriptor table */
+        max = desc.len / sizeof(VRingDesc);
+        desc_pa = desc.addr;
+        i = 0;
+        vring_desc_read(vdev, &desc, desc_pa, i);
+    }
+
+    /* Collect all the descriptors */
+    do {
+        bool map_ok;
+
+        if (desc.flags & VRING_DESC_F_WRITE) {
+            map_ok = virtqueue_map_desc(vdev, &in_num, addr + out_num,
+                                        iov + out_num,
+                                        VIRTQUEUE_MAX_SIZE - out_num, true,
+                                        desc.addr, desc.len, false);
+        } else {
+            if (in_num) {
+                virtio_error(vdev, "Incorrect order for descriptors");
+                goto err_undo_map;
+            }
+            map_ok = virtqueue_map_desc(vdev, &out_num, addr, iov,
+                                        VIRTQUEUE_MAX_SIZE, false,
+                                        desc.addr, desc.len, false);
+        }
+        if (!map_ok) {
+            goto err_undo_map;
+        }
+
+        /* If we've got too many, that implies a descriptor loop. */
+        if ((in_num + out_num) > max) {
+            virtio_error(vdev, "Looped descriptor");
+            goto err_undo_map;
+        }
+
+        rc = virtqueue_read_next_desc(vdev, &desc, desc_pa, max, &i);
+    } while (rc == VIRTQUEUE_READ_DESC_MORE);
+
+    if (rc == VIRTQUEUE_READ_DESC_ERROR) {
+        goto err_undo_map;
+    }
+
+    /* Now copy what we have collected and mapped */
+    elem = virtqueue_alloc_element(sz, out_num, in_num);
+    elem->index = head;
+    for (i = 0; i < out_num; i++) {
+        elem->out_addr[i] = addr[i];
+        elem->out_sg[i] = iov[i];
+    }
+    for (i = 0; i < in_num; i++) {
+        elem->in_addr[i] = addr[out_num + i];
+        elem->in_sg[i] = iov[out_num + i];
+    }
+
+    vq->inuse++;
+
+    trace_virtqueue_pop(vq, elem, elem->in_num, elem->out_num);
+    return elem;
+
+err_undo_map:
+    virtqueue_undo_map_desc(out_num, in_num, iov);
+    return NULL;
 }
 
 /* virtio device */
@@ -1643,6 +1775,7 @@ void virtio_save(VirtIODevice *vdev, QEMUFile *f)
         }
     }
 
+    vdev->size = i;
     if (vdc->save != NULL) {
         vdc->save(vdev, f);
     }

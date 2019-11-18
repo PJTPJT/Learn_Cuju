@@ -5,7 +5,14 @@
 
 #ifdef _WIN32
 
+#define socket_error() WSAGetLastError()
+
 int inet_aton(const char *cp, struct in_addr *ia);
+
+#else
+
+#define socket_error() errno
+#define closesocket(s) close(s)
 
 #endif /* !_WIN32 */
 
@@ -16,6 +23,8 @@ int qemu_socket(int domain, int type, int protocol);
 int qemu_accept(int s, struct sockaddr *addr, socklen_t *addrlen);
 int socket_set_cork(int fd, int v);
 int socket_set_nodelay(int fd);
+int socket_unset_nodelay(int fd);
+int socket_set_quickack(int fd);
 void qemu_set_block(int fd);
 void qemu_set_nonblock(int fd);
 int socket_set_fast_reuse(int fd);

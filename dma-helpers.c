@@ -131,6 +131,12 @@ static void dma_blk_cb(void *opaque, int ret)
 
     trace_dma_blk_cb(dbs, ret);
 
+    //For CUJU-FT
+    if (dbs->sg_cur_index == dbs->sg->nsg || ret < 0) {
+        if (dbs->dir == DMA_DIRECTION_FROM_DEVICE)
+            event_tap_fill_buffer(&dbs->iov, dbs->offset);
+    }
+
     dbs->acb = NULL;
     dbs->offset += dbs->iov.size;
 

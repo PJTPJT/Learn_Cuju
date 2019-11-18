@@ -173,8 +173,9 @@ static VirtIOSCSIReq *virtio_scsi_pop_req(VirtIOSCSI *s, VirtQueue *vq)
 {
     VirtIOSCSICommon *vs = (VirtIOSCSICommon *)s;
     VirtIOSCSIReq *req;
+    unsigned int head;
 
-    req = virtqueue_pop(vq, sizeof(VirtIOSCSIReq) + vs->cdb_size);
+    req = virtqueue_pop(vq, sizeof(VirtIOSCSIReq) + vs->cdb_size, &head, false);
     if (!req) {
         return NULL;
     }

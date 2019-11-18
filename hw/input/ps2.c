@@ -1280,9 +1280,12 @@ static QemuInputHandler ps2_keyboard_handler = {
     .event = ps2_keyboard_event,
 };
 
+extern void *kvm_shmem_alloc_trackable(unsigned int size);
+extern void kvm_shmem_free_trackable(void *ptr);
+
 void *ps2_kbd_init(void (*update_irq)(void *, int), void *update_arg)
 {
-    PS2KbdState *s = (PS2KbdState *)g_malloc0(sizeof(PS2KbdState));
+    PS2KbdState *s = (PS2KbdState *)kvm_shmem_alloc_trackable(sizeof(PS2KbdState));
 
     trace_ps2_kbd_init(s);
     s->common.update_irq = update_irq;
@@ -1304,7 +1307,7 @@ static QemuInputHandler ps2_mouse_handler = {
 
 void *ps2_mouse_init(void (*update_irq)(void *, int), void *update_arg)
 {
-    PS2MouseState *s = (PS2MouseState *)g_malloc0(sizeof(PS2MouseState));
+    PS2MouseState *s = (PS2MouseState *)kvm_shmem_alloc_trackable(sizeof(PS2MouseState));
 
     trace_ps2_mouse_init(s);
     s->common.update_irq = update_irq;

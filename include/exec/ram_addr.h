@@ -21,11 +21,13 @@
 
 #ifndef CONFIG_USER_ONLY
 #include "hw/xen/xen.h"
+#include "migration/cuju-kvm-share-mem.h"
 
 struct RAMBlock {
     struct rcu_head rcu;
     struct MemoryRegion *mr;
     uint8_t *host;
+    uint64_t *hash;
     ram_addr_t offset;
     ram_addr_t used_length;
     ram_addr_t max_length;

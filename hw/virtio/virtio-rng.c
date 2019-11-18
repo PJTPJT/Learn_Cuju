@@ -48,6 +48,7 @@ static void chr_read(void *opaque, const void *buf, size_t size)
     VirtQueueElement *elem;
     size_t len;
     int offset;
+    unsigned int head;
 
     if (!is_guest_ready(vrng)) {
         return;
@@ -57,7 +58,7 @@ static void chr_read(void *opaque, const void *buf, size_t size)
 
     offset = 0;
     while (offset < size) {
-        elem = virtqueue_pop(vrng->vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vrng->vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }

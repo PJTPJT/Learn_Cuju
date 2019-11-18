@@ -164,4 +164,11 @@ ssize_t qemu_iovec_compare(QEMUIOVector *a, QEMUIOVector *b);
 void qemu_iovec_clone(QEMUIOVector *dest, const QEMUIOVector *src, void *buf);
 void qemu_iovec_discard_back(QEMUIOVector *qiov, size_t bytes);
 
+// For CUJU-FT
+void qemu_iovec_alloc_by_external(QEMUIOVector *qiov, struct iovec *iov, int niov);
+void qemu_iovec_free_by_external(QEMUIOVector *qiov);
+void qemu_iovec_copy_sup(QEMUIOVector *dst, uint64_t d_skip,
+                         QEMUIOVector *src, uint64_t s_skip,
+                         size_t size);
+
 #endif

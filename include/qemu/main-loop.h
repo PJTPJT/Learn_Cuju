@@ -170,6 +170,7 @@ void qemu_del_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque);
 typedef void IOReadHandler(void *opaque, const uint8_t *buf, int size);
 typedef int IOCanReadHandler(void *opaque);
 
+#define CUJU_IO_HANDLER_KEEP (void *)0x1
 /**
  * qemu_set_fd_handler: Register a file descriptor with the main loop
  *

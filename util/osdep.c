@@ -57,6 +57,18 @@ int socket_set_nodelay(int fd)
     return qemu_setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
 }
 
+int socket_unset_nodelay(int fd)
+{
+    int v = 0;
+    return qemu_setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v));
+}
+
+int socket_set_quickack(int fd)
+{
+    int v = 1;
+    return qemu_setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &v, sizeof(v));
+}
+
 int qemu_madvise(void *addr, size_t len, int advice)
 {
     if (advice == QEMU_MADV_INVALID) {

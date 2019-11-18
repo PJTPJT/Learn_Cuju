@@ -823,6 +823,7 @@ static void virtio_gpu_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
     VirtIOGPU *g = VIRTIO_GPU(vdev);
     struct virtio_gpu_ctrl_command *cmd;
+    unsigned int head;
 
     if (!virtio_queue_ready(vq)) {
         return;
@@ -835,14 +836,14 @@ static void virtio_gpu_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
     }
 #endif
 
-    cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
+    cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command), &head, false);
     while (cmd) {
         cmd->vq = vq;
         cmd->error = 0;
         cmd->finished = false;
         cmd->waiting = false;
         QTAILQ_INSERT_TAIL(&g->cmdq, cmd, next);
-        cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
+        cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command), &head, false);
     }
 
     virtio_gpu_process_cmdq(g);
@@ -866,12 +867,13 @@ static void virtio_gpu_handle_cursor(VirtIODevice *vdev, VirtQueue *vq)
     VirtQueueElement *elem;
     size_t s;
     struct virtio_gpu_update_cursor cursor_info;
+    unsigned int head;
 
     if (!virtio_queue_ready(vq)) {
         return;
     }
     for (;;) {
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }

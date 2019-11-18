@@ -20,6 +20,19 @@ typedef struct KVMSlot
     void *ram;
     int slot;
     int flags;
+    //For Cuju
+    int log_sync_mark;
+    void *dirty_bitmap;
+    void **epoch_dirty_bitmaps;
+    __u64 *epoch_dirty_bitmap_pfn;
+    __u64 epoch_dirty_bitmap_plen;
+
+    void **epoch_gfn_to_put_offs;
+    __u64 *epoch_gfn_to_put_off_pfn;
+    __u64 epoch_gfn_to_put_off_plen;
+
+    void **epoch_gfn_to_put_off;
+    int bitmap_count;
 } KVMSlot;
 
 typedef struct KVMMemoryListener {

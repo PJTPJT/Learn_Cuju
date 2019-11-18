@@ -207,11 +207,12 @@ static void vhost_vsock_send_transport_reset(VHostVSock *vsock)
 {
     VirtQueueElement *elem;
     VirtQueue *vq = vsock->event_vq;
+    unsigned int head;
     struct virtio_vsock_event event = {
         .id = cpu_to_le32(VIRTIO_VSOCK_EVENT_TRANSPORT_RESET),
     };
 
-    elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+    elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
     if (!elem) {
         error_report("vhost-vsock missed transport reset event");
         return;

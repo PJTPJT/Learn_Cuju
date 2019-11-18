@@ -39,6 +39,8 @@ void vm_state_notify(int running, RunState state);
 void vm_start(void);
 int vm_stop(RunState state);
 int vm_stop_force_state(RunState state);
+void vm_start_mig(void);
+void vm_stop_mig(void);
 
 typedef enum WakeupReason {
     /* Always keep QEMU_WAKEUP_REASON_NONE = 0 */
@@ -113,6 +115,7 @@ void qemu_savevm_state_complete_precopy(QEMUFile *f, bool iterable_only);
 void qemu_savevm_state_pending(QEMUFile *f, uint64_t max_size,
                                uint64_t *res_non_postcopiable,
                                uint64_t *res_postcopiable);
+void qemu_savevm_state_cancel(QEMUFile *f);
 void qemu_savevm_command_send(QEMUFile *f, enum qemu_vm_cmd command,
                               uint16_t len, uint8_t *data);
 void qemu_savevm_send_ping(QEMUFile *f, uint32_t value);
@@ -127,7 +130,7 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
                                            uint64_t *start_list,
                                            uint64_t *length_list);
 
-int qemu_loadvm_state(QEMUFile *f);
+int qemu_loadvm_state(QEMUFile *f, int skip_header);
 
 extern int autostart;
 

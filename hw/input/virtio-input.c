@@ -24,6 +24,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
     VirtQueueElement *elem;
     unsigned have, need;
     int i, len;
+    unsigned int head;
 
     if (!vinput->active) {
         return;
@@ -54,7 +55,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
 
     /* ... and finally pass them to the guest */
     for (i = 0; i < vinput->qindex; i++) {
-        elem = virtqueue_pop(vinput->evt, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vinput->evt, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             /* should not happen, we've checked for space beforehand */
             fprintf(stderr, "%s: Huh?  No vq elem available ...\n", __func__);
@@ -81,9 +82,10 @@ static void virtio_input_handle_sts(VirtIODevice *vdev, VirtQueue *vq)
     virtio_input_event event;
     VirtQueueElement *elem;
     int len;
+    unsigned int head;
 
     for (;;) {
-        elem = virtqueue_pop(vinput->sts, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vinput->sts, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }

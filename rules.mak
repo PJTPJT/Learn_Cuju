@@ -101,8 +101,8 @@ LD_REL := $(CC) -nostdlib $(LD_REL_FLAGS)
 .PHONY: modules
 modules:
 
-%$(EXESUF): %.o
-	$(call LINK,$(filter %.o %.a %.mo, $^))
+#%$(EXESUF): %.o
+#	$(call LINK,$(filter %.o %.a %.mo, $^))
 
 %.a:
 	$(call quiet-command,rm -f $@ && $(AR) rcs $@ $^,"AR","$(TARGET_DIR)$@")

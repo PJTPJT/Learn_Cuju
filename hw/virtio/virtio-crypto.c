@@ -222,9 +222,10 @@ static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
     int64_t session_id;
     uint8_t status;
     size_t s;
+    unsigned int head;
 
     for (;;) {
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }
@@ -394,7 +395,8 @@ static void virtio_crypto_req_complete(VirtIOCryptoReq *req, uint8_t status)
 static VirtIOCryptoReq *
 virtio_crypto_get_request(VirtIOCrypto *s, VirtQueue *vq)
 {
-    VirtIOCryptoReq *req = virtqueue_pop(vq, sizeof(VirtIOCryptoReq));
+    unsigned int head;
+    VirtIOCryptoReq *req = virtqueue_pop(vq, sizeof(VirtIOCryptoReq), &head, false);
 
     if (req) {
         virtio_crypto_init_request(s, vq, req);

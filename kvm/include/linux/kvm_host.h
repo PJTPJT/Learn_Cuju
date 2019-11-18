@@ -41,11 +41,16 @@
  */
 
 #include <asm/types.h>
+#include <linux/version.h>
 #include <linux/hardirq.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
+#include <linux/kthread.h>
+#include <linux/kfifo.h>
 #include <linux/signal.h>
+#include <linux/shared_pages_array.h>
+#include <linux/diff_req.h>
 #include <linux/sched.h>
 #include <linux/bug.h>
 #include <linux/mm.h>
@@ -318,7 +323,18 @@ struct kvm_vcpu {
 #endif
 	bool preempted;
 	struct kvm_vcpu_arch arch;
+
+	struct hrtimer hrtimer;
+	ktime_t hrtimer_remaining;
+	bool hrtimer_running;
+	bool hrtimer_pending;
+	unsigned long epoch_time_in_us;
 };
+
+static inline struct kvm_vcpu *hrtimer_to_vcpu(struct hrtimer *timer)
+{
+	return container_of(timer, struct kvm_vcpu, hrtimer);
+}
 
 static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
 {
@@ -331,14 +347,27 @@ static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
  */
 #define KVM_MEM_MAX_NR_PAGES ((1UL << 31) - 1)
 
+// sync with the one in kvm.h
+#define KVM_DIRTY_BITMAP_INIT_COUNT    2
+
 struct kvm_memory_slot {
 	gfn_t base_gfn;
 	unsigned long npages;
+    	unsigned long *rmap;
 	unsigned long *dirty_bitmap;
+
+	struct shared_pages_array epoch_dirty_bitmaps;
+	struct shared_pages_array epoch_gfn_to_put_offs;
+
+	unsigned long *epoch_gfn_to_put_off;
+	unsigned long *lock_dirty_bitmap;
+	unsigned long *backup_transfer_bitmap;
+
 	struct kvm_arch_memory_slot arch;
 	unsigned long userspace_addr;
 	u32 flags;
 	short id;
+	int bitmap_count;
 };
 
 static inline unsigned long kvm_dirty_bitmap_bytes(struct kvm_memory_slot *memslot)
@@ -418,6 +447,13 @@ struct kvm_memslots {
 	int used_slots;
 };
 
+struct kvm_trackable {
+	void *ptr;	// user address
+	unsigned int size;
+	pte_t **ppte;
+	struct page **page;
+};
+
 struct kvm {
 	spinlock_t mmu_lock;
 	struct mutex slots_lock;
@@ -467,6 +503,34 @@ struct kvm {
 #endif
 	long tlbs_dirty;
 	struct list_head devices;
+
+    struct kvmft_context ft_context;
+
+    struct kvm_trackable *trackable_list;
+    unsigned int trackable_list_len;
+
+    struct task_struct *diff_kthread;
+    wait_queue_head_t diff_req_event;
+
+    struct mm_struct *qemu_mm;
+
+    struct task_struct *spcl_kthread;
+    wait_queue_head_t spcl_event;
+    volatile uint32_t spcl_run_serial;
+
+    struct task_struct *xmit_kthread;
+    wait_queue_head_t xmit_event;
+    volatile int xmit_serial;
+    volatile int xmit_off;
+
+    atomic_t pending_page_num[4];
+    int trans_len[4];
+    wait_queue_head_t mdt_event;
+
+    struct ft_modified_during_transfer_list mdt;
+
+    DECLARE_KFIFO(trans_queue, int, KVM_MAX_MIGRATION_DESC);
+    wait_queue_head_t trans_queue_event;
 };
 
 #define kvm_err(fmt, ...) \
@@ -613,9 +677,9 @@ enum kvm_mr_change {
 };
 
 int kvm_set_memory_region(struct kvm *kvm,
-			  const struct kvm_userspace_memory_region *mem);
+			  struct kvm_userspace_memory_region *mem);
 int __kvm_set_memory_region(struct kvm *kvm,
-			    const struct kvm_userspace_memory_region *mem);
+			    struct kvm_userspace_memory_region *mem);
 void kvm_arch_free_memslot(struct kvm *kvm, struct kvm_memory_slot *free,
 			   struct kvm_memory_slot *dont);
 int kvm_arch_create_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
@@ -685,7 +749,15 @@ int kvm_clear_guest(struct kvm *kvm, gpa_t gpa, unsigned long len);
 struct kvm_memory_slot *gfn_to_memslot(struct kvm *kvm, gfn_t gfn);
 int kvm_is_visible_gfn(struct kvm *kvm, gfn_t gfn);
 unsigned long kvm_host_page_size(struct kvm *kvm, gfn_t gfn);
-void mark_page_dirty(struct kvm *kvm, gfn_t gfn);
+//void mark_page_dirty(struct kvm *kvm, gfn_t gfn);
+int mark_page_dirty(struct kvm *kvm, gfn_t gfn);
+//void mark_page_dirty_in_slot(struct kvm_memory_slot *memslot, gfn_t gfn);
+int clear_page_dirty_in_slot(struct kvm *kvm, struct kvm_memory_slot *memslot,
+			     gfn_t gfn);
+int mark_prev_page_dirty_in_slot(struct kvm *kvm, struct kvm_memory_slot *memslot,
+			     gfn_t gfn);
+int clear_prev_page_dirty_in_slot(struct kvm *kvm, struct kvm_memory_slot *memslot,
+ 			     gfn_t gfn);
 
 struct kvm_memslots *kvm_vcpu_memslots(struct kvm_vcpu *vcpu);
 struct kvm_memory_slot *kvm_vcpu_gfn_to_memslot(struct kvm_vcpu *vcpu, gfn_t gfn);
@@ -793,6 +865,7 @@ int kvm_arch_vcpu_runnable(struct kvm_vcpu *vcpu);
 int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu);
 
 void *kvm_kvzalloc(unsigned long size);
+void kvm_kvfree(const void *addr);
 
 #ifndef __KVM_HAVE_ARCH_VM_ALLOC
 static inline struct kvm *kvm_arch_alloc_vm(void)
@@ -929,8 +1002,13 @@ static inline void __kvm_guest_enter(void)
 	 * one time slice). Lets treat guest mode as quiescent state, just like
 	 * we do with user-mode execution.
 	 */
-	if (!context_tracking_cpu_is_enabled())
-		rcu_virt_note_context_switch(smp_processor_id());
+	if (!context_tracking_cpu_is_enabled()) {
+	    #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
+	    	rcu_virt_note_context_switch(smp_processor_id());
+	    #else
+	    	rcu_note_context_switch();
+	    #endif
+	}
 }
 
 /* must be called with irqs disabled */
@@ -996,6 +1074,24 @@ static inline struct kvm_memory_slot *
 __gfn_to_memslot(struct kvm_memslots *slots, gfn_t gfn)
 {
 	return search_memslots(slots, gfn);
+}
+
+static inline bool in_memslot(struct kvm_memory_slot *memslot, gfn_t gfn)
+{
+    if (gfn >= memslot->base_gfn &&
+          gfn < memslot->base_gfn + memslot->npages)
+        return true;
+    return false;
+}
+
+static inline void memslots_dump(struct kvm *kvm)
+{
+    struct kvm_memslots *slots = kvm_memslots(kvm);
+	struct kvm_memory_slot *memslot;
+
+	kvm_for_each_memslot(memslot, slots)
+        printk("%s %10lx %10lx\n", __func__, (unsigned long)memslot->base_gfn,
+            (unsigned long)memslot->npages);
 }
 
 static inline unsigned long
@@ -1169,6 +1265,27 @@ static inline bool kvm_check_request(int req, struct kvm_vcpu *vcpu)
 		return false;
 	}
 }
+
+int page_is_dirty(struct kvm *kvm, gfn_t gfn);
+int page_is_dirty_in_prev(struct kvm *kvm, gfn_t gfn);
+int test_and_clear_dirty_in_prev(struct kvm *kvm, gfn_t gfn);
+
+static inline int kvm_shm_is_enabled(struct kvm *kvm)
+{
+    struct kvmft_context *cxt = &kvm->ft_context;
+    return cxt->shm_enabled;
+}
+
+static inline int kvm_shm_log_full(struct kvm *kvm)
+{
+    struct kvmft_context *cxt = &kvm->ft_context;
+
+    return cxt->log_full;
+}
+
+int kvmft_arch_populate_vcpu_all_state(struct kvm_vcpu *vcpu,
+        struct kvm_cpu_state *state);
+
 
 extern bool kvm_rebooting;
 

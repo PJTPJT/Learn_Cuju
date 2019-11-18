@@ -28,7 +28,14 @@
 #include "qemu-common.h"
 #include "exec/cpu-common.h"
 #include "io/channel.h"
+#include "qemu/osdep.h"
 
+/* This function writes a chunk of data to a file at the given position.
+ * The pos argument can be ignored if the file is only being used for
+ * streaming.  The handler should try to write all of the data it can.
+ */
+typedef int (QEMUFilePutBufferFunc)(void *opaque, uint8_t *buf,
+                                    int64_t pos, int size);
 
 /* Read a chunk of data from a file at the given position.  The pos argument
  * can be ignored if the file is only be used for streaming.  The number of
@@ -103,6 +110,7 @@ typedef QEMUFile *(QEMURetPathFunc)(void *opaque);
 typedef int (QEMUFileShutdownFunc)(void *opaque, bool rd, bool wr);
 
 typedef struct QEMUFileOps {
+	QEMUFilePutBufferFunc *put_buffer;
     QEMUFileGetBufferFunc *get_buffer;
     QEMUFileCloseFunc *close;
     QEMUFileSetBlocking *set_blocking;
@@ -117,6 +125,30 @@ typedef struct QEMUFileHooks {
     QEMURamHookFunc *hook_ram_load;
     QEMURamSaveFunc *save_page;
 } QEMUFileHooks;
+
+#define IO_BUF_SIZE 32768
+#define MAX_IOV_SIZE MIN(IOV_MAX, 64)
+
+struct QEMUFile {
+    const QEMUFileOps *ops;
+    const QEMUFileHooks *hooks;
+    void *opaque;
+
+    int64_t bytes_xfer;
+    int64_t xfer_limit;
+
+    int64_t pos; /* start of buffer when writing, end of buffer
+                    when reading */
+    int buf_index;
+    int buf_size; /* 0 when writing */
+    uint8_t *buf;
+
+    struct iovec iov[MAX_IOV_SIZE];
+    unsigned int iovcnt;
+
+    int last_error;
+    bool free_buf_on_flush;
+};
 
 QEMUFile *qemu_fopen_ops(void *opaque, const QEMUFileOps *ops);
 QEMUFile *qemu_fopen_channel_input(QIOChannel *ioc);
@@ -136,6 +168,14 @@ void qemu_put_buffer_async(QEMUFile *f, const uint8_t *buf, size_t size);
 bool qemu_file_mode_is_not_valid(const char *mode);
 bool qemu_file_is_writable(QEMUFile *f);
 
+int qemu_ft_trans_begin(QEMUFile *f);
+int qemu_ft_trans_commit(QEMUFile *f);
+int qemu_ft_trans_cancel(QEMUFile *f);
+int qemu_ft_trans_is_sender(QEMUFile *f);
+int qemu_ft_trans_recv_ack1(QEMUFile *f);
+int qemu_ft_trans_commit1(QEMUFile *f, int ram_len, unsigned long serial);
+int qemu_ft_trans_recv_ack(QEMUFile *f);
+int qemu_ft_trans_send_begin(QEMUFile *f);
 
 static inline void qemu_put_ubyte(QEMUFile *f, unsigned int v)
 {
@@ -185,6 +225,11 @@ int qemu_file_shutdown(QEMUFile *f);
 QEMUFile *qemu_file_get_return_path(QEMUFile *f);
 void qemu_fflush(QEMUFile *f);
 void qemu_file_set_blocking(QEMUFile *f, bool block);
+
+//for cuju-ft
+void qemu_file_put_notify(QEMUFile *f);
+void qemu_file_get_notify(void *opaque);
+QEMUFile *cuju_qemu_fopen_ft_trans(int s_fd, int c_fd, int ram_fd, int ram_hdr_fd);
 
 static inline void qemu_put_be64s(QEMUFile *f, const uint64_t *pv)
 {

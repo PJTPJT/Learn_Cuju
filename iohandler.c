@@ -66,6 +66,21 @@ void qemu_set_fd_handler(int fd,
                        fd_read, fd_write, opaque);
 }
 
+void qemu_iohandler_ft_pause(bool pause)
+{
+    aio_ft_pause(pause);
+}
+
+bool qemu_iohandler_is_ft_paused(void)
+{
+    return aio_is_ft_paused();
+}
+
+void qemu_set_fd_survive_ft_pause(int fd, bool survive)
+{
+    aio_set_fd_survive_ft_pause(iohandler_ctx, fd, survive);
+}
+
 /* reaping of zombies.  right now we're not passing the status to
    anyone, but it would be possible to add a callback.  */
 #ifndef _WIN32

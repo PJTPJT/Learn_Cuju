@@ -287,6 +287,26 @@ void qemu_iovec_init_external(QEMUIOVector *qiov, struct iovec *iov, int niov)
         qiov->size += iov[i].iov_len;
 }
 
+void qemu_iovec_alloc_by_external(QEMUIOVector *qiov, struct iovec *iov, int niov)
+{
+    int i, size;
+    char *base;
+
+    qemu_iovec_init(qiov, 1);
+
+    size = 0;
+    for (i = 0; i < niov; i++)
+        size += iov[i].iov_len;
+
+    base = g_malloc(size);
+    qemu_iovec_add(qiov, base, size);
+}
+
+void qemu_iovec_free_by_external(QEMUIOVector *qiov)
+{
+    g_free(qiov->iov[0].iov_base);
+}
+
 void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
 {
     assert(qiov->nalloc != -1);
@@ -299,6 +319,67 @@ void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
     qiov->iov[qiov->niov].iov_len = len;
     qiov->size += len;
     ++qiov->niov;
+}
+
+/*
+ * Copies iovecs from src to the end of dst. It starts copying after skipping
+ * the given number of bytes in src and copies until src is completely copied
+ * or the total size of the copied iovec reaches size.The size of the last
+ * copied iovec is changed in order to fit the specified total size if it isn't
+ * a perfect fit already.
+ */
+void qemu_iovec_copy_sup(QEMUIOVector *dst, uint64_t d_skip,
+                         QEMUIOVector *src, uint64_t s_skip,
+                         size_t size)
+{
+    int s_i=-1, d_i=-1, i;
+    uint64_t s_off=-1, d_off=-1, s_left, d_left, copy;
+    size_t done = 0;
+
+    for (i = 0; i < src->niov; ++i) {
+        if (s_skip >= src->iov[i].iov_len) {
+            s_skip -= src->iov[i].iov_len;
+            continue;
+        } else {
+            s_i = i;
+            s_off = s_skip;
+            break;
+        }
+    }
+
+    for (i = 0; i < dst->niov; ++i) {
+        if (d_skip >= dst->iov[i].iov_len) {
+            d_skip -= dst->iov[i].iov_len;
+            continue;
+        } else {
+            d_i = i;
+            d_off = d_skip;
+            break;
+        }
+    }
+
+    while (done != size) {
+        // try to copy some from src to dst
+        s_left = src->iov[s_i].iov_len - s_off;
+        d_left = dst->iov[d_i].iov_len - d_off;
+        copy = s_left;
+        if (copy > d_left)
+            copy = d_left;
+        if (copy > size - done)
+            copy = size - done;
+        memcpy(dst->iov[d_i].iov_base + d_off, src->iov[s_i].iov_base + s_off, copy);
+        done += copy;
+        if (copy == s_left) {
+            s_i++;
+            s_off = 0;
+        } else
+            s_off += copy;
+        if (copy == d_left) {
+            d_i++;
+            d_off = 0;
+        } else
+            d_off += copy;
+    }
 }
 
 /*
