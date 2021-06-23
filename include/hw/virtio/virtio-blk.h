@@ -43,6 +43,19 @@ struct VirtIOBlkConf
 
 struct VirtIOBlockDataPlane;
 
+typedef struct ReqRecord {
+    int *list;
+    int *idx;
+    void **reqs;
+    bool *completed;
+    int len;
+    int size;
+    int left;
+    QTAILQ_ENTRY(ReqRecord) node;
+} ReqRecord;
+
+typedef QTAILQ_HEAD(, ReqRecord) ReqRecordList;
+
 struct VirtIOBlockReq;
 typedef struct VirtIOBlock {
     VirtIODevice parent_obj;
@@ -56,7 +69,19 @@ typedef struct VirtIOBlock {
     bool dataplane_disabled;
     bool dataplane_started;
     struct VirtIOBlockDataPlane *dataplane;
+
+    // For CUJU-FT
+    void *pending_rq;   // pending requests
+    ReqRecord *temp_list;
+    ReqRecordList record_list;
+
 } VirtIOBlock;
+
+typedef struct ReqRecordCommit {
+    ReqRecord *req;
+    QEMUBH *bh;
+    VirtIOBlock *block;
+} ReqRecordCommit;
 
 typedef struct VirtIOBlockReq {
     VirtQueueElement elem;
@@ -70,6 +95,9 @@ typedef struct VirtIOBlockReq {
     struct VirtIOBlockReq *next;
     struct VirtIOBlockReq *mr_next;
     BlockAcctCookie acct;
+
+    // For CUJU-FT
+    ReqRecord *record;
 } VirtIOBlockReq;
 
 #define VIRTIO_BLK_MAX_MERGE_REQS 32

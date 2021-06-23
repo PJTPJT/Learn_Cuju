@@ -100,6 +100,7 @@ static size_t write_to_port(VirtIOSerialPort *port,
     VirtQueueElement *elem;
     VirtQueue *vq;
     size_t offset;
+    unsigned int head;
 
     vq = port->ivq;
     if (!virtio_queue_ready(vq)) {
@@ -110,7 +111,7 @@ static size_t write_to_port(VirtIOSerialPort *port,
     while (offset < size) {
         size_t len;
 
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }
@@ -130,12 +131,13 @@ static size_t write_to_port(VirtIOSerialPort *port,
 static void discard_vq_data(VirtQueue *vq, VirtIODevice *vdev)
 {
     VirtQueueElement *elem;
+    unsigned int head;
 
     if (!virtio_queue_ready(vq)) {
         return;
     }
     for (;;) {
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }
@@ -158,6 +160,7 @@ static void do_flush_queued_data(VirtIOSerialPort *port, VirtQueue *vq,
                                  VirtIODevice *vdev)
 {
     VirtIOSerialPortClass *vsc;
+    unsigned int head;
 
     assert(port);
     assert(virtio_queue_ready(vq));
@@ -169,7 +172,7 @@ static void do_flush_queued_data(VirtIOSerialPort *port, VirtQueue *vq,
 
         /* Pop an elem only if we haven't left off a previous one mid-way */
         if (!port->elem) {
-            port->elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+            port->elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
             if (!port->elem) {
                 break;
             }
@@ -219,13 +222,14 @@ static size_t send_control_msg(VirtIOSerial *vser, void *buf, size_t len)
 {
     VirtQueueElement *elem;
     VirtQueue *vq;
+    unsigned int head;
 
     vq = vser->c_ivq;
     if (!virtio_queue_ready(vq)) {
         return 0;
     }
 
-    elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+    elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
     if (!elem) {
         return 0;
     }
@@ -455,6 +459,7 @@ static void control_out(VirtIODevice *vdev, VirtQueue *vq)
     VirtIOSerial *vser;
     uint8_t *buf;
     size_t len;
+    unsigned int head;
 
     vser = VIRTIO_SERIAL(vdev);
 
@@ -463,7 +468,7 @@ static void control_out(VirtIODevice *vdev, VirtQueue *vq)
     for (;;) {
         size_t cur_len;
 
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             break;
         }

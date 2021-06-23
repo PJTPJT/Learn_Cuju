@@ -57,6 +57,7 @@
 #include "exec/log.h"
 
 #include "migration/vmstate.h"
+#include "migration/cuju-kvm-share-mem.h"
 
 #include "qemu/range.h"
 #ifndef _WIN32
@@ -1530,6 +1531,7 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
 
     cpu_physical_memory_clear_dirty_range(block->offset, block->used_length);
     block->used_length = newsize;
+    kvm_shmem_mark_page_dirty_range(block->mr, block->offset, block->used_length);
     cpu_physical_memory_set_dirty_range(block->offset, block->used_length,
                                         DIRTY_CLIENTS_ALL);
     memory_region_set_size(block->mr, newsize);
@@ -1644,6 +1646,9 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
     smp_wmb();
     ram_list.version++;
     qemu_mutex_unlock_ramlist();
+
+	// for CUJU-FT
+	kvm_shmem_mark_page_dirty_range(new_block->mr, new_block->offset, new_block->used_length);
 
     cpu_physical_memory_set_dirty_range(new_block->offset,
                                         new_block->used_length,
@@ -2016,6 +2021,9 @@ static void notdirty_mem_write(void *opaque, hwaddr ram_addr,
         tb_lock();
         tb_invalidate_phys_page_fast(ram_addr, size);
     }
+    // for CUJU-FT
+	kvm_shmem_mark_page_dirty_range(NULL, ram_addr, size);
+
     switch (size) {
     case 1:
         stb_p(qemu_map_ram_ptr(NULL, ram_addr), val);
@@ -2495,7 +2503,7 @@ int cpu_memory_rw_debug(CPUState *cpu, target_ulong addr,
 static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
                                      hwaddr length)
 {
-    uint8_t dirty_log_mask = memory_region_get_dirty_log_mask(mr);
+	uint8_t dirty_log_mask = memory_region_get_dirty_log_mask(mr);
     addr += memory_region_get_ram_addr(mr);
 
     /* No early return if dirty_log_mask is or becomes 0, because
@@ -2614,6 +2622,10 @@ static MemTxResult address_space_write_continue(AddressSpace *as, hwaddr addr,
         } else {
             /* RAM case */
             ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+
+            // for CUJU-FT
+			kvm_shmem_mark_page_dirty_range(mr, addr1 + memory_region_get_ram_addr(mr), l);
+
             memcpy(ptr, buf, l);
             invalidate_and_set_dirty(mr, addr1, l);
         }
@@ -2791,6 +2803,9 @@ static inline void cpu_physical_memory_write_rom_internal(AddressSpace *as,
             ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
             switch (type) {
             case WRITE_DATA:
+				// for CUJU-FT
+				kvm_shmem_mark_page_dirty_range(mr, addr1 + memory_region_get_ram_addr(mr), l);
+
                 memcpy(ptr, buf, l);
                 invalidate_and_set_dirty(mr, addr1, l);
                 break;
@@ -2953,8 +2968,11 @@ void *address_space_map(AddressSpace *as,
     hwaddr len = *plen;
     hwaddr done = 0;
     hwaddr l, xlat, base;
+	hwaddr page;
     MemoryRegion *mr, *this_mr;
     void *ptr;
+
+    assert(!qemu_iohandler_is_ft_paused());
 
     if (len == 0) {
         return NULL;
@@ -2990,6 +3008,14 @@ void *address_space_map(AddressSpace *as,
     base = xlat;
 
     for (;;) {
+        // for CUJU-FT
+		page = addr & TARGET_PAGE_MASK;
+        if (is_write) {
+            hwaddr tlen = 1;
+            kvm_shmem_mark_page_dirty(qemu_ram_ptr_length(mr->ram_block, base + done, &tlen),
+                                     page >> TARGET_PAGE_BITS);
+            //assert(!r);
+        }
         len -= l;
         addr += l;
         done += l;
@@ -3019,6 +3045,7 @@ void *address_space_map(AddressSpace *as,
 void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
                          int is_write, hwaddr access_len)
 {
+    assert(!qemu_iohandler_is_ft_paused());
     if (buffer != bounce.buffer) {
         MemoryRegion *mr;
         ram_addr_t addr1;
@@ -3026,6 +3053,9 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
         mr = memory_region_from_host(buffer, &addr1);
         assert(mr != NULL);
         if (is_write) {
+			// for CUJU-FT
+			kvm_shmem_mark_page_dirty_range(mr, addr1 + memory_region_get_ram_addr(mr), access_len);
+
             invalidate_and_set_dirty(mr, addr1, access_len);
         }
         if (xen_enabled()) {
@@ -3379,6 +3409,9 @@ void address_space_stl_notdirty(AddressSpace *as, hwaddr addr, uint32_t val,
         r = memory_region_dispatch_write(mr, addr1, val, 4, attrs);
     } else {
         ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+        // for CUJU-FT
+		kvm_shmem_mark_page_dirty_range(mr, memory_region_get_ram_addr(mr) + addr, 4);
+
         stl_p(ptr, val);
 
         dirty_log_mask = memory_region_get_dirty_log_mask(mr);
@@ -3415,6 +3448,8 @@ static inline void address_space_stl_internal(AddressSpace *as,
     MemTxResult r;
     bool release_lock = false;
 
+    assert(!qemu_iohandler_is_ft_paused());
+
     rcu_read_lock();
     mr = address_space_translate(as, addr, &addr1, &l,
                                  true);
@@ -3434,6 +3469,10 @@ static inline void address_space_stl_internal(AddressSpace *as,
     } else {
         /* RAM case */
         ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+
+		// for CUJU-FT
+		kvm_shmem_mark_page_dirty_range(mr, addr1 + memory_region_get_ram_addr(mr), 4);
+
         switch (endian) {
         case DEVICE_LITTLE_ENDIAN:
             stl_le_p(ptr, val);
@@ -3543,6 +3582,10 @@ static inline void address_space_stw_internal(AddressSpace *as,
     } else {
         /* RAM case */
         ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+
+		// for CUJU-FT
+		kvm_shmem_mark_page_dirty_range(mr, addr1 + memory_region_get_ram_addr(mr), 2);
+
         switch (endian) {
         case DEVICE_LITTLE_ENDIAN:
             stw_le_p(ptr, val);
@@ -3743,5 +3786,91 @@ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
     }
     rcu_read_unlock();
     return ret;
+}
+
+void *gfn_to_hva(unsigned long gfn)
+{
+    hwaddr addr = gfn << TARGET_PAGE_BITS;
+    hwaddr addr1;
+    hwaddr l = 1;
+    MemoryRegion *mr;
+    uint8_t *ptr;
+
+    rcu_read_lock();
+    mr = address_space_translate(&address_space_memory, addr, &addr1, &l, true);
+    ptr = qemu_ram_ptr_length(mr->ram_block, addr1, &l);
+    rcu_read_unlock();
+
+    return ptr;
+}
+
+static uint64_t __hash_page(uint64_t *ptr)
+{
+    uint64_t hash = 0;
+    int i;
+    for (i = 0; i < 512; i++)
+        hash += (ptr[i] + 29) * (i + 111);
+    return hash;
+}
+
+void kvmft_calc_ram_hash(void)
+{
+    RAMBlock *block;
+    long i;
+
+    QLIST_FOREACH(block, &ram_list.blocks, next)
+        for (i = 0; i < block->max_length; i += 4096) {
+            if (!block->hash)
+                block->hash = g_malloc(block->max_length / 4096 * sizeof(uint64_t));
+            block->hash[i >> 12] = __hash_page((uint64_t *)(block->host + i));
+        }
+}
+
+static void __assert_gfn_in_dlist(unsigned int gfn, unsigned int *gfns, int size)
+{
+    int i;
+    for (i = 0; i < size; i++)
+        if (gfn == gfns[i])
+            return;
+#ifdef ft_debug_mode_enable
+    printf("%s can't find %u in dlist\n", __func__, gfn);
+    printf("%s due to a bug, dirty pages are out of control, FT will fail, abort..\n", __func__);
+    printf("%s please notify me\n", __func__);
+#endif
+    //abort();
+}
+
+// assert all dirtied pages are in list
+void kvmft_assert_ram_hash_and_dlist(unsigned int *gfns, int size)
+{
+    RAMBlock *block;
+    long i;
+    static int count = 0;
+
+    if (count >= 5)
+        return;
+    ++count;
+
+    qemu_mutex_lock_ramlist();
+
+    QLIST_FOREACH_RCU(block, &ram_list.blocks, next) {
+        if (!memcmp(block->idstr, "vga.vram", 8))
+            continue;
+        for (i = 0; i < block->used_length; i += 4096) {
+            uint64_t hash = __hash_page((uint64_t *)(block->host + i));
+            unsigned long gfn = (unsigned long)(block->offset + i) >> 12;
+            if (block->hash[i >> 12] != hash) {
+                if (gfn >= PC_ROM_MAX)
+                    gfn = 0x100000 + (gfn - PC_ROM_MAX);
+                __assert_gfn_in_dlist((unsigned int)gfn, gfns, size);
+                block->hash[i >> 12] = hash;
+            }
+        }
+    }
+
+    qemu_mutex_unlock_ramlist();
+#ifdef ft_debug_mode_enable
+    printf("%s good\n", __func__);
+#endif
 }
 #endif

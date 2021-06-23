@@ -1501,6 +1501,22 @@ int vm_stop(RunState state)
     return do_vm_stop(state);
 }
 
+bool ft_stopped_cpus;
+
+void vm_stop_mig(void)
+{
+    ft_stopped_cpus = true;
+    cpu_disable_ticks();
+    pause_all_vcpus();
+}
+
+void vm_start_mig(void)
+{
+    ft_stopped_cpus = false;
+    cpu_enable_ticks();
+    resume_all_vcpus();
+}
+
 /* does a state transition even if the VM is already stopped,
    current state is forgotten forever */
 int vm_stop_force_state(RunState state)

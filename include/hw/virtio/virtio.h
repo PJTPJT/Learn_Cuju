@@ -21,6 +21,7 @@
 #include "qemu/event_notifier.h"
 #include "standard-headers/linux/virtio_config.h"
 #include "standard-headers/linux/virtio_ring.h"
+#include "migration/cuju-kvm-share-mem.h"
 
 /* A guest should never accept this.  It implies negotiation is broken. */
 #define VIRTIO_F_BAD_FEATURE		30
@@ -64,6 +65,7 @@ typedef struct VirtQueueElement
 #define VIRTIO_DEVICE(obj) \
         OBJECT_CHECK(VirtIODevice, (obj), TYPE_VIRTIO_DEVICE)
 
+
 enum virtio_device_endian {
     VIRTIO_DEVICE_ENDIAN_UNKNOWN,
     VIRTIO_DEVICE_ENDIAN_LITTLE,
@@ -93,6 +95,8 @@ struct VirtIODevice
     uint8_t device_endian;
     bool use_guest_notifier_mask;
     QLIST_HEAD(, VirtQueue) *vector_queues;
+
+    int size;
 };
 
 typedef struct VirtioDeviceClass {
@@ -171,7 +175,7 @@ void virtqueue_fill(VirtQueue *vq, const VirtQueueElement *elem,
                     unsigned int len, unsigned int idx);
 
 void virtqueue_map(VirtQueueElement *elem);
-void *virtqueue_pop(VirtQueue *vq, size_t sz);
+void *virtqueue_pop(VirtQueue *vq, size_t sz, unsigned int *head_out, bool defer_write_map);
 void *qemu_get_virtqueue_element(QEMUFile *f, size_t sz);
 void qemu_put_virtqueue_element(QEMUFile *f, VirtQueueElement *elem);
 int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
@@ -179,6 +183,14 @@ int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 void virtqueue_get_avail_bytes(VirtQueue *vq, unsigned int *in_bytes,
                                unsigned int *out_bytes,
                                unsigned max_in_bytes, unsigned max_out_bytes);
+
+//For CUJU-FT
+void *virtqueue_get(VirtQueue *vq, size_t sz, unsigned int head);
+void *virtio_blk_get_temp_list(void);
+void virtio_blk_commit_temp_list(void* opaque);
+void virtqueue_map_write(VirtQueueElement *elem);
+void virtqueue_mark_dirty(struct iovec *sg, hwaddr *addr, size_t num_sg);
+//
 
 bool virtio_should_notify(VirtIODevice *vdev, VirtQueue *vq);
 void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq);

@@ -467,16 +467,32 @@ static void object_finalize(void *data)
     }
 }
 
+extern void *kvm_shmem_alloc_trackable(unsigned int size);
+extern void kvm_shmem_free_trackable(void *ptr);
+
 Object *object_new_with_type(Type type)
 {
     Object *obj;
 
     g_assert(type != NULL);
     type_initialize(type);
-
-    obj = g_malloc(type->instance_size);
+    if (strcmp(type->name, "qio-channel-socket") == 0 ||    //QIOChannelSocket
+        strcmp(type->name, "qemu64-x86_64-cpu") == 0 ||     //cpu
+        strcmp(type->name, "kvm-apic") == 0 ||              //apic
+        strcmp(type->name, "kvm-i8259") == 0 ||             //i8259
+        strcmp(type->name, "kvm-ioapic") == 0 ||            //ioapic
+        strcmp(type->name, "kvm-pit") == 0) {               //i8254
+        obj = g_malloc(type->instance_size);
+        obj->free = g_free;
+    }
+    else {
+        obj = kvm_shmem_alloc_trackable(type->instance_size);
+        obj->free = kvm_shmem_free_trackable;
+    }
+#ifdef ft_debug_mode_enable
+    printf("object_new_with_type %s %p\n", type->name, obj);
+#endif
     object_initialize_with_type(obj, type->instance_size, type);
-    obj->free = g_free;
 
     return obj;
 }

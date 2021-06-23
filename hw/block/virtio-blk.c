@@ -29,6 +29,108 @@
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio-access.h"
 
+
+#define HEAD_LIST_INIT_SIZE  64
+// TODO there may be multiple virtual blocks, but for now we only need
+// to prove that retry-method works for one virtual block.
+VirtIOBlock *global_virtio_block;
+
+static void confirm_req_read_memory_mapped(VirtIOBlockReq *req)
+{
+    if (req->in == NULL) {
+        unsigned in_num = req->elem.in_num;
+        struct iovec *in_iov = req->elem.in_sg;
+        virtqueue_map_write(&req->elem);
+
+        req->in = (void *)in_iov[in_num - 1].iov_base
+              + in_iov[in_num - 1].iov_len
+              - sizeof(struct virtio_blk_inhdr);
+        req->in_len = iov_size(in_iov, in_num);
+    } else {
+        printf("%s %p already mapped\n", __func__, req);
+        abort();
+        virtqueue_mark_dirty(req->elem.in_sg, req->elem.in_addr, req->elem.in_num);
+    }
+}
+
+static void virtio_blk_save_write_head(VirtIOBlock *s, VirtIOBlockReq *req, unsigned int head)
+{
+    if (s->temp_list == NULL) {
+        s->temp_list = g_malloc0(sizeof(ReqRecord));
+        s->temp_list->list = g_malloc(sizeof(s->temp_list->list[0]) * HEAD_LIST_INIT_SIZE);
+        s->temp_list->idx = g_malloc(sizeof(s->temp_list->idx[0]) * HEAD_LIST_INIT_SIZE);
+        s->temp_list->reqs = g_malloc(sizeof(s->temp_list->reqs[0]) * HEAD_LIST_INIT_SIZE);
+        s->temp_list->completed = g_malloc(sizeof(s->temp_list->completed[0]) * HEAD_LIST_INIT_SIZE);
+        s->temp_list->size = HEAD_LIST_INIT_SIZE;
+    } else if (s->temp_list->len >= s->temp_list->size) {
+        s->temp_list->size *= 2;
+        s->temp_list->list = g_realloc(s->temp_list->list, sizeof(s->temp_list->list[0]) * s->temp_list->size);
+        s->temp_list->idx = g_realloc(s->temp_list->idx, sizeof(s->temp_list->idx[0]) * s->temp_list->size);
+        s->temp_list->reqs = g_realloc(s->temp_list->reqs, sizeof(s->temp_list->reqs[0]) * s->temp_list->size);
+        s->temp_list->completed = g_realloc(s->temp_list->completed, sizeof(s->temp_list->completed[0]) * s->temp_list->size);
+    }
+    s->temp_list->reqs[s->temp_list->len] = req;
+    s->temp_list->list[s->temp_list->len] = head;
+    s->temp_list->idx[s->temp_list->len] = virtio_get_queue_index(req->vq);
+    s->temp_list->completed[s->temp_list->len] = false;
+    s->temp_list->len++;
+    req->record = s->temp_list;
+}
+
+void* virtio_blk_get_temp_list(void)
+{
+    VirtIOBlock *s = global_virtio_block;
+    void *opaque = NULL;
+    if (s->temp_list != NULL && s->temp_list->len > 0) {
+        opaque = s->temp_list;
+        s->temp_list = NULL;
+    }
+    return opaque;
+}
+
+static void virtio_blk_handle_write(VirtIOBlockReq *req, MultiReqBuffer *mrb);
+static void virtio_blk_submit_multireq(BlockBackend *blk, MultiReqBuffer *mrb);
+
+static void virtio_blk_flush_bh(void *opaque)
+{
+    ReqRecordCommit *c = opaque;
+    ReqRecord *r = c->req;
+    VirtIOBlock *s = c->block;
+    MultiReqBuffer mrb = {
+        .num_reqs = 0,
+        .is_write = true
+    };
+    int i;
+
+    r->left = r->len;
+
+    for (i = 0; i < r->len; i++)
+        virtio_blk_handle_write(r->reqs[i], &mrb);
+
+    if (mrb.is_write && mrb.num_reqs > 0) {
+        virtio_blk_submit_multireq(s->blk, &mrb);
+    }
+
+    qemu_bh_delete(c->bh);
+    g_free(c);
+}
+
+void virtio_blk_commit_temp_list(void* opaque)
+{
+    ReqRecord *temp_list = opaque;
+
+    if (temp_list != NULL) {
+        VirtIOBlock *s = global_virtio_block;
+        ReqRecordCommit *c;
+        QTAILQ_INSERT_TAIL(&s->record_list, temp_list, node);
+        c = g_malloc(sizeof(ReqRecordCommit));
+        c->req = temp_list;
+        c->bh = qemu_bh_new(virtio_blk_flush_bh, c);
+        c->block = s;
+        qemu_bh_schedule(c->bh);
+    }
+}
+
 static void virtio_blk_init_request(VirtIOBlock *s, VirtQueue *vq,
                                     VirtIOBlockReq *req)
 {
@@ -38,6 +140,7 @@ static void virtio_blk_init_request(VirtIOBlock *s, VirtQueue *vq,
     req->in_len = 0;
     req->next = NULL;
     req->mr_next = NULL;
+    req->record = NULL;
 }
 
 static void virtio_blk_free_request(VirtIOBlockReq *req)
@@ -47,12 +150,77 @@ static void virtio_blk_free_request(VirtIOBlockReq *req)
     }
 }
 
+static void virtio_blk_complete_head(VirtIOBlockReq *req)
+{
+    VirtIOBlock *s = global_virtio_block;
+    ReqRecord *rec = req->record;
+    int i;
+
+    if (rec != NULL) {
+        for (i=0 ; i<rec->len ; ++i) {
+            if (rec->reqs[i] == req) {
+                rec->completed[i] = true;
+                break;
+            }
+        }
+        assert(i<rec->len);
+        if (--rec->left == 0) {
+            QTAILQ_REMOVE(&s->record_list, rec, node);
+            g_free(rec);
+        }
+    }
+}
+
+static void virtio_blk_pending_req_complete(VirtIOBlockReq *req)
+{
+    VirtIOBlock *s = req->dev;
+    VirtIOBlockReq *prq = s->pending_rq, *rq;
+
+    if (!prq) {
+        return;
+    }
+
+    if (prq == req) {
+        s->pending_rq = prq->next;
+        return;
+    }
+
+    rq = prq->next;
+    while (rq != NULL) {
+        if (rq == req) {
+            prq->next = rq->next;
+            return;
+        }
+        prq = rq;
+        rq = rq->next;
+    }
+
+    //if (ldl_p(&req->out->type) & VIRTIO_BLK_T_OUT)
+    //    abort();
+
+    //if (ldl_p(&req->out->type) & VIRTIO_BLK_T_IN)
+    //    abort();
+}
+
 static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
 {
     VirtIOBlock *s = req->dev;
     VirtIODevice *vdev = VIRTIO_DEVICE(s);
 
     trace_virtio_blk_req_complete(req, status);
+
+    if (kvmft_started())
+        confirm_req_read_memory_mapped(req);
+
+    if (kvmft_started() && req->elem.in_num > 1) {
+        QEMUIOVector qiov;
+        qemu_iovec_init_external(&qiov, &req->elem.in_sg[0],
+                                 req->elem.in_num -1);
+        qiov.nalloc = qiov.niov; // hack, stop qemu_iovec_copy from complaining
+        qemu_iovec_copy_sup(&qiov, 0, &req->qiov, 0, qiov.size);
+        qemu_iovec_free_by_external(&req->qiov);
+        qemu_iovec_destroy(&req->qiov);
+    }
 
     stb_p(&req->in->status, status);
     virtqueue_push(req->vq, &req->elem, req->in_len);
@@ -61,6 +229,10 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
     } else {
         virtio_notify(vdev, req->vq);
     }
+
+    // For CUJU-FT
+    virtio_blk_pending_req_complete(req);
+    virtio_blk_complete_head(req);
 }
 
 static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
@@ -95,7 +267,7 @@ static void virtio_blk_rw_complete(void *opaque, int ret)
         next = req->mr_next;
         trace_virtio_blk_rw_complete(req, ret);
 
-        if (req->qiov.nalloc != -1) {
+        if (!kvmft_started() && req->qiov.nalloc != -1) {
             /* If nalloc is != 1 req->qiov is a local copy of the original
              * external iovec. It was allocated in submit_merged_requests
              * to be able to merge requests. */
@@ -189,9 +361,74 @@ out:
 
 #endif
 
-static VirtIOBlockReq *virtio_blk_get_request(VirtIOBlock *s, VirtQueue *vq)
+/*
+static VirtIOBlockReq *virtio_blk_alloc_request(VirtIOBlock *s)
 {
-    VirtIOBlockReq *req = virtqueue_pop(vq, sizeof(VirtIOBlockReq));
+    VirtIOBlockReq *req = g_malloc(sizeof(*req));
+    req->dev = s;
+    req->qiov.size = 0;
+    req->next = NULL;
+    req->record = NULL;
+    return req;
+}
+*/
+
+static VirtIOBlockReq *virtio_blk_get_request_from_head(VirtIODevice *vdev, unsigned int head, unsigned int idx)
+{
+    VirtIOBlock *s = VIRTIO_BLK(vdev);
+    VirtIOBlockReq *req = virtqueue_get(virtio_get_queue(vdev, idx), sizeof(VirtIOBlockReq), head);
+    uint32_t type;
+
+    if (req != NULL) {
+        virtio_blk_init_request(s, virtio_get_queue(vdev, idx), req);
+    }
+    else {
+        return NULL;
+    }
+
+    struct iovec *in_iov = req->elem.in_sg;
+    struct iovec *iov = req->elem.out_sg;
+    unsigned in_num = req->elem.in_num;
+    unsigned out_num = req->elem.out_num;
+
+    if (req->elem.out_num < 1 || req->elem.in_num < 1) {
+        virtio_error(vdev, "virtio-blk missing headers");
+        return NULL;
+    }
+
+    if (unlikely(iov_to_buf(iov, out_num, 0, &req->out,
+                            sizeof(req->out)) != sizeof(req->out))) {
+        virtio_error(vdev, "virtio-blk request outhdr too short");
+        return NULL;
+    }
+
+    iov_discard_front(&iov, &out_num, sizeof(req->out));
+
+    if (in_iov[in_num - 1].iov_len < sizeof(struct virtio_blk_inhdr)) {
+        virtio_error(vdev, "virtio-blk request inhdr too short");
+        return NULL;
+    }
+
+    /* We always touch the last byte, so just see how big in_iov is.  */
+    req->in_len = iov_size(in_iov, in_num);
+    req->in = (void *)in_iov[in_num - 1].iov_base
+              + in_iov[in_num - 1].iov_len
+              - sizeof(struct virtio_blk_inhdr);
+    iov_discard_back(in_iov, &in_num, sizeof(struct virtio_blk_inhdr));
+
+    qemu_iovec_init_external(&req->qiov, iov, out_num);
+    req->sector_num = virtio_ldq_p(VIRTIO_DEVICE(req->dev), &req->out.sector);
+    type = virtio_ldl_p(VIRTIO_DEVICE(req->dev), &req->out.type);
+
+    assert(type & VIRTIO_BLK_T_OUT);
+
+    return req;
+}
+
+static VirtIOBlockReq *virtio_blk_get_request(VirtIOBlock *s, VirtQueue *vq, unsigned int *out_head)
+{
+    bool defer_map = kvmft_started();
+    VirtIOBlockReq *req = virtqueue_pop(vq, sizeof(VirtIOBlockReq), out_head, defer_map);
 
     if (req) {
         virtio_blk_init_request(s, vq, req);
@@ -468,7 +705,34 @@ static bool virtio_blk_sect_range_ok(VirtIOBlock *dev,
     return true;
 }
 
-static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb)
+static void virtio_blk_handle_write(VirtIOBlockReq *req, MultiReqBuffer *mrb)
+{
+
+    if (!virtio_blk_sect_range_ok(req->dev, req->sector_num,
+                                  req->qiov.size)) {
+        virtio_blk_req_complete(req, VIRTIO_BLK_S_IOERR);
+        block_acct_invalid(blk_get_stats(req->dev->blk), BLOCK_ACCT_WRITE);
+        virtio_blk_free_request(req);
+        return;
+    }
+
+    block_acct_start(blk_get_stats(req->dev->blk),
+                     &req->acct, req->qiov.size, BLOCK_ACCT_WRITE);
+
+    /* merge would exceed maximum number of requests or IO direction
+     * changes */
+    if (mrb->num_reqs > 0 && (mrb->num_reqs == VIRTIO_BLK_MAX_MERGE_REQS ||
+                              BLOCK_ACCT_WRITE != mrb->is_write ||
+                              !req->dev->conf.request_merging)) {
+        virtio_blk_submit_multireq(req->dev->blk, mrb);
+    }
+
+    assert(mrb->num_reqs < VIRTIO_BLK_MAX_MERGE_REQS);
+    mrb->reqs[mrb->num_reqs++] = req;
+    mrb->is_write = BLOCK_ACCT_WRITE;
+}
+
+static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb, unsigned int head)
 {
     uint32_t type;
     struct iovec *in_iov = req->elem.in_sg;
@@ -497,10 +761,16 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb)
     }
 
     /* We always touch the last byte, so just see how big in_iov is.  */
-    req->in_len = iov_size(in_iov, in_num);
-    req->in = (void *)in_iov[in_num - 1].iov_base
+    if (kvmft_started()) {
+        req->in = NULL;
+        req->in_len = 0;
+    }
+    else {
+        req->in_len = iov_size(in_iov, in_num);
+        req->in = (void *)in_iov[in_num - 1].iov_base
               + in_iov[in_num - 1].iov_len
               - sizeof(struct virtio_blk_inhdr);
+    }
     iov_discard_back(in_iov, &in_num, sizeof(struct virtio_blk_inhdr));
 
     type = virtio_ldl_p(VIRTIO_DEVICE(req->dev), &req->out.type);
@@ -519,8 +789,26 @@ static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb)
             qemu_iovec_init_external(&req->qiov, iov, out_num);
             trace_virtio_blk_handle_write(req, req->sector_num,
                                           req->qiov.size / BDRV_SECTOR_SIZE);
+			if (kvmft_started()) {
+				virtio_blk_save_write_head(s, req, head);
+#ifdef CONFIG_EPOCH_OUTPUT_TRIGGER
+				extern kvmft_notify_new_output();
+				kvmft_notify_new_output();
+#endif
+                break;
+			}
         } else {
-            qemu_iovec_init_external(&req->qiov, in_iov, in_num);
+            if (kvmft_started()) {
+                qemu_iovec_alloc_by_external(&req->qiov, in_iov,
+                                     in_num);
+            }
+            else {
+                qemu_iovec_init_external(&req->qiov, in_iov, in_num);
+            }
+            s = req->dev;
+            req->next = s->pending_rq;
+            s->pending_rq = req;
+
             trace_virtio_blk_handle_read(req, req->sector_num,
                                          req->qiov.size / BDRV_SECTOR_SIZE);
         }
@@ -585,11 +873,12 @@ void virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq)
 {
     VirtIOBlockReq *req;
     MultiReqBuffer mrb = {};
+    unsigned int head;
 
     blk_io_plug(s->blk);
 
-    while ((req = virtio_blk_get_request(s, vq))) {
-        if (virtio_blk_handle_request(req, &mrb)) {
+    while ((req = virtio_blk_get_request(s, vq, &head))) {
+        if (virtio_blk_handle_request(req, &mrb, head)) {
             virtqueue_detach_element(req->vq, &req->elem, 0);
             virtio_blk_free_request(req);
             break;
@@ -632,7 +921,7 @@ static void virtio_blk_dma_restart_bh(void *opaque)
 
     while (req) {
         VirtIOBlockReq *next = req->next;
-        if (virtio_blk_handle_request(req, &mrb)) {
+        if (virtio_blk_handle_request(req, &mrb, 0)) {
             /* Device is now broken and won't do any processing until it gets
              * reset. Already queued requests will be lost: let's purge them.
              */
@@ -822,8 +1111,62 @@ static void virtio_blk_set_status(VirtIODevice *vdev, uint8_t status)
 static void virtio_blk_save_device(VirtIODevice *vdev, QEMUFile *f)
 {
     VirtIOBlock *s = VIRTIO_BLK(vdev);
-    VirtIOBlockReq *req = s->rq;
 
+    VirtIOBlockReq *req = s->rq;
+    ReqRecord *rec;
+    int i;
+
+    // send temp_list and record_list to slave.
+    QTAILQ_FOREACH(rec, &s->record_list, node) {
+        int nsend = 0; // debugging
+        qemu_put_sbyte(f, 3);
+        qemu_put_be32(f, rec->left);
+        for (i = 0; i < rec->len; i++) {
+            if (rec->completed[i])
+                continue;
+            qemu_put_be32(f, rec->list[i]);
+            qemu_put_be32(f, rec->idx[i]);
+            nsend++;
+        }
+        assert(nsend==rec->left);
+    }
+    if (s->temp_list && s->temp_list->len > 0) {
+        qemu_put_sbyte(f, 3);
+        qemu_put_be32(f, s->temp_list->len);
+        for (i = 0; i < s->temp_list->len; i++) {
+            qemu_put_be32(f, s->temp_list->list[i]);
+            qemu_put_be32(f, s->temp_list->idx[i]);
+        }
+    }
+
+    req = s->pending_rq;
+    while (req) {
+        qemu_put_sbyte(f, 2);
+        if (s->conf.num_queues > 1) {
+            qemu_put_be32(f, virtio_get_queue_index(req->vq));
+        }
+
+        qemu_put_virtqueue_element(f, &req->elem);
+        req = req->next;
+        /*
+        qemu_put_sbyte(f, 2);
+        qemu_put_be32(f, req->elem.index);
+        qemu_put_be32(f, req->elem.out_num);
+        qemu_put_be32(f, req->elem.in_num);
+        for (int i = 0; i < req->elem.in_num; i++) {
+            qemu_put_be64(f, req->elem.in_addr[i]);
+            qemu_put_be64(f, req->elem.in_sg[i].iov_len);
+        }
+        for (int i = 0; i < req->elem.out_num; i++) {
+            qemu_put_be64(f, req->elem.out_addr[i]);
+            qemu_put_be64(f, req->elem.out_sg[i].iov_len);
+        }
+        //qemu_put_buffer(f, (unsigned char*)&req->elem, sizeof(req->elem));
+        req = req->next;
+        */
+    }
+
+    req = s->rq;
     while (req) {
         qemu_put_sbyte(f, 1);
 
@@ -841,28 +1184,86 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
                                   int version_id)
 {
     VirtIOBlock *s = VIRTIO_BLK(vdev);
+    int t, i;
 
-    while (qemu_get_sbyte(f)) {
-        unsigned nvqs = s->conf.num_queues;
-        unsigned vq_idx = 0;
-        VirtIOBlockReq *req;
+    MultiReqBuffer mrb = {
+        .num_reqs = 0,
+    };
 
-        if (nvqs > 1) {
-            vq_idx = qemu_get_be32(f);
-
-            if (vq_idx >= nvqs) {
-                error_report("Invalid virtqueue index in request list: %#x",
-                             vq_idx);
-                return -EINVAL;
-            }
-        }
-
-        req = qemu_get_virtqueue_element(f, sizeof(VirtIOBlockReq));
-        virtio_blk_init_request(s, virtio_get_queue(vdev, vq_idx), req);
-        req->next = s->rq;
-        s->rq = req;
+    // free all accumulated rq
+    while (s->rq) {
+        VirtIOBlockReq *req = s->rq;
+        s->rq = req->next;
+        g_free(req);
     }
+    s->rq = NULL;
 
+    while ((t = qemu_get_sbyte(f))) {
+        if (t == 1) {
+            unsigned nvqs = s->conf.num_queues;
+            unsigned vq_idx = 0;
+            VirtIOBlockReq *req;
+
+            if (nvqs > 1) {
+                vq_idx = qemu_get_be32(f);
+
+                if (vq_idx >= nvqs) {
+                    error_report("Invalid virtqueue index in request list: %#x",
+                                 vq_idx);
+                    return -EINVAL;
+                }
+            }
+
+            req = qemu_get_virtqueue_element(f, sizeof(VirtIOBlockReq));
+            virtio_blk_init_request(s, virtio_get_queue(vdev, vq_idx), req);
+            req->next = s->rq;
+            s->rq = req;
+
+            virtio_blk_handle_request(req, &mrb, 0);
+        } else if (t == 2) {
+            unsigned nvqs = s->conf.num_queues;
+            unsigned vq_idx = 0;
+            VirtIOBlockReq *req;
+
+            if (nvqs > 1) {
+                vq_idx = qemu_get_be32(f);
+
+                if (vq_idx >= nvqs) {
+                    error_report("Invalid virtqueue index in request list: %#x",
+                                 vq_idx);
+                    return -EINVAL;
+                }
+            }
+
+            req = qemu_get_virtqueue_element(f, sizeof(VirtIOBlockReq));
+            virtio_blk_init_request(s, virtio_get_queue(vdev, vq_idx), req);
+
+            /*
+            req->next = s->rq;
+            s->rq = req;
+            */
+
+            virtio_blk_handle_request(req, &mrb, 0);
+            printf("%s pending read request %p added\n", __func__, req);
+        } else if (t == 3) {
+            int len = qemu_get_be32(f);
+            if (len > 0) {
+                for (i = 0; i < len; i++) {
+                    int head = qemu_get_be32(f);
+                    int idx = qemu_get_be32(f);
+                    printf("%s handle head %d/%d: %d\n", __func__, i, len, head);
+                    blk_io_plug(s->blk);
+                    VirtIOBlockReq *req = virtio_blk_get_request_from_head(vdev, head, idx);
+                    virtio_blk_handle_write(req, &mrb);
+                    blk_io_unplug(s->blk);
+                }
+            }
+        } else {
+            assert(0);
+        }
+    }
+    if(mrb.num_reqs)
+        virtio_blk_submit_multireq(s->blk, &mrb);
     return 0;
 }
 
@@ -930,6 +1331,11 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
     blk_set_guest_block_size(s->blk, s->conf.conf.logical_block_size);
 
     blk_iostatus_enable(s->blk);
+
+    // For CUJU-FT
+    global_virtio_block = s;
+    s->temp_list = NULL;
+    QTAILQ_INIT(&s->record_list);
 }
 
 static void virtio_blk_device_unrealize(DeviceState *dev, Error **errp)

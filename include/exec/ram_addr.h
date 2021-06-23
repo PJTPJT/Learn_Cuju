@@ -21,11 +21,13 @@
 
 #ifndef CONFIG_USER_ONLY
 #include "hw/xen/xen.h"
+#include "migration/cuju-kvm-share-mem.h"
 
 struct RAMBlock {
     struct rcu_head rcu;
     struct MemoryRegion *mr;
     uint8_t *host;
+    uint64_t *hash;
     ram_addr_t offset;
     ram_addr_t used_length;
     ram_addr_t max_length;
@@ -371,6 +373,7 @@ static inline void cpu_physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                     page_number = (i * HOST_LONG_BITS + j) * hpratio;
                     addr = page_number * TARGET_PAGE_SIZE;
                     ram_addr = start + addr;
+					kvm_shmem_mark_page_dirty_range(NULL, ram_addr, TARGET_PAGE_SIZE * hpratio);
                     cpu_physical_memory_set_dirty_range(ram_addr,
                                        TARGET_PAGE_SIZE * hpratio, clients);
                 } while (c != 0);

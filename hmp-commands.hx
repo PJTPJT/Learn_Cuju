@@ -894,11 +894,12 @@ ETEXI
 
     {
         .name       = "migrate",
-        .args_type  = "detach:-d,blk:-b,inc:-i,uri:s",
-        .params     = "[-d] [-b] [-i] uri",
+        .args_type  = "detach:-d,blk:-b,inc:-i,cuju:-c,uri:s",
+        .params     = "[-d] [-b] [-i] [-c] uri",
         .help       = "migrate to URI (using -d to not wait for completion)"
 		      "\n\t\t\t -b for migration without shared storage with"
 		      " full copy of disk\n\t\t\t -i for migration without "
+		      "\n\t\t\t -c enter cuju ft mode"
 		      "shared storage with incremental copy of disk "
 		      "(base image shared between src and destination)",
         .cmd        = hmp_migrate,
@@ -906,11 +907,12 @@ ETEXI
 
 
 STEXI
-@item migrate [-d] [-b] [-i] @var{uri}
+@item migrate [-d] [-b] [-i] [-c] @var{uri}
 @findex migrate
 Migrate to @var{uri} (using -d to not wait for completion).
 	-b for migration with full copy of disk
 	-i for migration with incremental copy of disk (base image is shared)
+	-c enter cuju ft mode
 ETEXI
 
     {
@@ -1776,4 +1778,35 @@ ETEXI
 
 STEXI
 @end table
+ETEXI
+
+
+    {
+        .name       = "cuju-failover",
+        .args_type  = "",
+        .params     = "",
+        .help       = "call failover",
+        .cmd        = hmp_cuju_failover,
+    },
+
+
+STEXI
+@item cuju-failover
+@findex cuju-failover
+Do failover
+ETEXI
+
+    {
+        .name       = "cuju-adjust-epoch",
+        .args_type  = "epoch:i",
+        .params     = "epoch",
+        .help       = "adjust epoch size in cuju-ft",
+        .cmd        = hmp_cuju_adjust_epoch,
+    },
+
+
+STEXI
+@item cuju-adjust-epoch
+@findex cuju-adjust-epoch
+Adjust epoch size in cuju-ft
 ETEXI

@@ -149,6 +149,13 @@ void qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size);
 ssize_t qemu_send_packet_raw(NetClientState *nc, const uint8_t *buf, int size);
 ssize_t qemu_send_packet_async(NetClientState *nc, const uint8_t *buf,
                                int size, NetPacketSent *sent_cb);
+
+// For CUJU-FT
+void qemu_send_packet_proxy(NetClientState *vc, const uint8_t *buf, int size);
+ssize_t qemu_sendv_packet_async_proxy(NetClientState *vc,
+                                      const struct iovec *iov,
+                                      int iovcnt, NetPacketSent *sent_cb);
+
 void qemu_purge_queued_packets(NetClientState *nc);
 void qemu_flush_queued_packets(NetClientState *nc);
 void qemu_format_nic_info_str(NetClientState *nc, uint8_t macaddr[6]);

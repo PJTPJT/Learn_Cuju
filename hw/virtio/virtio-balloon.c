@@ -209,11 +209,12 @@ static void virtio_balloon_handle_output(VirtIODevice *vdev, VirtQueue *vq)
     VirtIOBalloon *s = VIRTIO_BALLOON(vdev);
     VirtQueueElement *elem;
     MemoryRegionSection section;
+    unsigned int head;
 
     for (;;) {
         size_t offset = 0;
         uint32_t pfn;
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             return;
         }
@@ -254,8 +255,9 @@ static void virtio_balloon_receive_stats(VirtIODevice *vdev, VirtQueue *vq)
     VirtIOBalloonStat stat;
     size_t offset = 0;
     qemu_timeval tv;
+    unsigned int head;
 
-    elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+    elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
     if (!elem) {
         goto out;
     }

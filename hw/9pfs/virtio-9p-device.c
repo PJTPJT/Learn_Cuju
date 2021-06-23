@@ -42,6 +42,7 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
     V9fsPDU *pdu;
     ssize_t len;
     VirtQueueElement *elem;
+    unsigned int head;
 
     while ((pdu = pdu_alloc(s))) {
         struct {
@@ -50,7 +51,7 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
             uint16_t tag_le;
         } QEMU_PACKED out;
 
-        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement), &head, false);
         if (!elem) {
             goto out_free_pdu;
         }

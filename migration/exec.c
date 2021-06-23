@@ -24,7 +24,6 @@
 #include "io/channel-command.h"
 #include "trace.h"
 
-
 void exec_start_outgoing_migration(MigrationState *s, const char *command, Error **errp)
 {
     QIOChannel *ioc;

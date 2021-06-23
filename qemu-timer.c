@@ -473,6 +473,11 @@ bool timer_expired(QEMUTimer *timer_head, int64_t current_time)
     return timer_expired_ns(timer_head, current_time * timer_head->scale);
 }
 
+void qemu_timer_survive_iohandler_pause(QEMUTimer *ts, bool survive)
+{
+    ts->survive_iohandler_pause = survive;
+}
+
 bool timerlist_run_timers(QEMUTimerList *timer_list)
 {
     QEMUTimer *ts;
@@ -516,17 +521,23 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
             break;
         }
 
-        /* remove timer from the list before calling the callback */
-        timer_list->active_timers = ts->next;
-        ts->next = NULL;
-        ts->expire_time = -1;
-        cb = ts->cb;
-        opaque = ts->opaque;
-        qemu_mutex_unlock(&timer_list->active_timers_lock);
+        if (!qemu_iohandler_is_ft_paused() || ts->survive_iohandler_pause) {
+            /* remove timer from the list before calling the callback */
+            timer_list->active_timers = ts->next;
+            ts->next = NULL;
+            ts->expire_time = -1;
+            cb = ts->cb;
+            opaque = ts->opaque;
+            qemu_mutex_unlock(&timer_list->active_timers_lock);
 
-        /* run the callback (the timer list can be modified) */
-        cb(opaque);
-        progress = true;
+            /* run the callback (the timer list can be modified) */
+            cb(opaque);
+            progress = true;
+        }
+        else {
+            timer_list->active_timers = ts->next;
+            qemu_mutex_unlock(&timer_list->active_timers_lock);
+        }
     }
 
 out:

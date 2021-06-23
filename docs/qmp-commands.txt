@@ -2875,6 +2875,7 @@ Enable/Disable migration capabilities
 - "events": generate events for each migration state change
 - "postcopy-ram": postcopy mode for live migration
 - "x-colo": COarse-Grain LOck Stepping (COLO) for Non-stop Service
+- "cuju-ft": Cuju fault-tolerance framework
 
 Arguments:
 
@@ -2897,6 +2898,7 @@ Query current migration capabilities
          - "events": Migration state change event state (json-bool)
          - "postcopy-ram": postcopy ram state (json-bool)
          - "x-colo": COarse-Grain LOck Stepping for Non-stop Service (json-bool)
+         - "cuju-ft": Cuju fault-tolerance framework
 
 Arguments:
 
@@ -2911,7 +2913,8 @@ Example:
      {"state": false, "capability": "compress"},
      {"state": true, "capability": "events"},
      {"state": false, "capability": "postcopy-ram"},
-     {"state": false, "capability": "x-colo"}
+     {"state": false, "capability": "x-colo"},
+     {"state": false, "capability": "cuju-ft"}
    ]}
 
 migrate-set-parameters

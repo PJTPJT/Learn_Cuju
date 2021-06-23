@@ -36,6 +36,8 @@
 
 #include "qemu/compatfd.h"
 
+//int io_thread_fd = -1;  TODO find io thread fd
+
 /* If we have signalfd, we mask out the signals we want to handle and then
  * use signalfd to listen for them.  We rely on whatever the current signal
  * handler is to dispatch the signals when we receive them.
@@ -103,6 +105,7 @@ static int qemu_signal_init(void)
     fcntl_setfl(sigfd, O_NONBLOCK);
 
     qemu_set_fd_handler(sigfd, sigfd_handler, NULL, (void *)(intptr_t)sigfd);
+    qemu_set_fd_survive_ft_pause(sigfd, true);
 
     return 0;
 }
@@ -159,6 +162,8 @@ int qemu_init_main_loop(Error **errp)
         return -EMFILE;
     }
     qemu_notify_bh = qemu_bh_new(notify_event_cb, NULL);
+    qemu_bh_set_mig_survive(qemu_notify_bh, true);
+
     gpollfds = g_array_new(FALSE, FALSE, sizeof(GPollFD));
     src = aio_get_g_source(qemu_aio_context);
     g_source_set_name(src, "aio-context");

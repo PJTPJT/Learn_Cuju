@@ -31,7 +31,12 @@ struct AioHandler
     void *opaque;
     bool is_external;
     QLIST_ENTRY(AioHandler) node;
+
+    //For CUJU-FT
+    bool mig_survive;
 };
+
+static bool ft_pause;
 
 #ifdef CONFIG_EPOLL_CREATE1
 
@@ -290,6 +295,28 @@ bool aio_pending(AioContext *ctx)
     return false;
 }
 
+//For CUJU-FT
+void aio_ft_pause(bool pause)
+{
+    ft_pause = pause;
+}
+
+bool aio_is_ft_paused(void)
+{
+    return ft_pause;
+}
+
+void aio_set_fd_survive_ft_pause(AioContext *ctx, int fd, bool survive)
+{
+    AioHandler *node;
+
+    QLIST_FOREACH(node, &ctx->aio_handlers, node) {
+        if (node->pfd.fd == fd) {
+            node->mig_survive = survive;
+        }
+    }
+}
+
 bool aio_dispatch(AioContext *ctx)
 {
     AioHandler *node;
@@ -310,6 +337,12 @@ bool aio_dispatch(AioContext *ctx)
      */
     node = QLIST_FIRST(&ctx->aio_handlers);
     while (node) {
+        // For CUJU-FT
+        if (qemu_iohandler_is_ft_paused() && !node->mig_survive) {
+            node = QLIST_NEXT(node, node);
+            continue;
+        }
+
         AioHandler *tmp;
         int revents;
 

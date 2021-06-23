@@ -468,12 +468,14 @@
 # @colo: VM is in the process of fault tolerance, VM can not get into this
 #        state unless colo capability is enabled for migration. (since 2.8)
 #
+# @cuju: VM is in the process of cuju-ft
+#
 # Since: 2.3
 #
 ##
 { 'enum': 'MigrationStatus',
   'data': [ 'none', 'setup', 'cancelling', 'cancelled',
-            'active', 'postcopy-active', 'completed', 'failed', 'colo' ] }
+            'active', 'postcopy-active', 'completed', 'failed', 'colo', 'cuju' ] }
 
 ##
 # @MigrationInfo:
@@ -588,11 +590,13 @@
 #        side, this process is called COarse-Grain LOck Stepping (COLO) for
 #        Non-stop Service. (since 2.8)
 #
+# @cuju-ft: TODO
+#
 # Since: 1.2
 ##
 { 'enum': 'MigrationCapability',
   'data': ['xbzrle', 'rdma-pin-all', 'auto-converge', 'zero-blocks',
-           'compress', 'events', 'postcopy-ram', 'x-colo'] }
+           'compress', 'events', 'postcopy-ram', 'x-colo', 'cuju-ft'] }
 
 ##
 # @MigrationCapabilityStatus:
@@ -2231,12 +2235,14 @@
 # @detach: this argument exists only for compatibility reasons and
 #          is ignored by QEMU
 #
+# @cuju: this argument is cuju ft mode
+#
 # Returns: nothing on success
 #
 # Since: 0.14.0
 ##
 { 'command': 'migrate',
-  'data': {'uri': 'str', '*blk': 'bool', '*inc': 'bool', '*detach': 'bool' } }
+  'data': {'uri': 'str', '*blk': 'bool', '*inc': 'bool', '*detach': 'bool', '*cuju': 'bool' } }
 
 ##
 # @migrate-incoming:
@@ -4776,3 +4782,83 @@
 # Since: 2.7
 ##
 { 'command': 'query-hotpluggable-cpus', 'returns': ['HotpluggableCPU'] }
+
+
+##
+# @CujuMode:
+#
+# The cuju-ft mode
+#
+# @error:
+# @off:
+# @init:
+# @pre-run:
+# @iter:
+# @atomic:
+# @recv:
+# @handover:
+# @speculative:
+# @flush-output:
+# @trnasfer:
+# @snapshot:
+# @run:
+#
+# Since: 2.8
+##
+{ 'enum': 'CujuMode',
+  'data': [ 'error', 'off', 'init', 'pre-run', 'iter',
+            'atomic', 'recv', 'handover', 'speculative',
+            'flush-output', 'trnasfer', 'snapshot',
+            'run']
+}
+
+##
+# @CujuTransactionState:
+#
+# The cuju-ft transaction state
+#
+# @nack:
+# @init:
+# @begin:
+# @continue:
+# @commit:
+# @commit1:
+# @ack:
+# @ack1:
+# @cancel:
+# @nocopy:
+# @atomic:
+# @dev-header:
+# @dev-states:
+#
+# Since: 2.8
+##
+{ 'enum': 'CujuTransactionState',
+  'data': [ 'nack', 'init', 'begin', 'continue',
+            'commit', 'commit1', 'ack', 'ack1',
+            'cancel', 'nocopy', 'atomic', 'dev-header',
+            'dev-states']
+}
+
+##
+# @cuju-failover:
+#
+# Do failover
+#
+# Returns: nothing on success
+#
+# Since: 2.8
+##
+{ 'command': 'cuju-failover'}
+
+##
+# @cuju-adjust-epoch:
+#
+# Adjust epoch size in cuju-ft
+#
+# Returns: nothing on success
+#
+# Since: 2.8
+##
+{ 'command': 'cuju-adjust-epoch', 'data': {'epoch': 'uint32'}}
+
