@@ -4711,7 +4711,7 @@ int main(int argc, char **argv, char **envp)
 #ifdef ft_debug_mode_enable
     kvm_slots_dump();
 #endif
-    //__migrate_init();
+    __migrate_init();
 
     //trans_ram_init();
 

@@ -37,6 +37,10 @@
 #include "io/channel-buffer.h"
 #include "io/channel-tls.h"
 #include "migration/colo.h"
+#include "migration/cuju-kvm-share-mem.h"
+#include "migration/cuju-ft-trans-file.h"
+#include <linux/kvm.h>
+#include "migration/event-tap.h"
 
 #define MAX_THROTTLE  (32 << 20)      /* Migration transfer speed throttling */
 
@@ -79,6 +83,13 @@ static bool deferred_incoming;
  * at the end as MIS is being freed.
  */
 static PostcopyState incoming_postcopy_state;
+
+int migration_states_count = 0;
+
+// At the time setting up FT, current will pointer to 2nd MigrationState.
+static int migration_states_current;
+
+static MigrationState **migration_states;
 
 /* When we add fault tolerance, we could have several
    migrations at once.  For now we don't need to add
@@ -1042,6 +1053,28 @@ bool migration_in_postcopy(MigrationState *s)
 bool migration_in_postcopy_after_devices(MigrationState *s)
 {
     return migration_in_postcopy(s) && s->postcopy_after_devices;
+}
+
+static MigrationState* migration_new(void)
+{
+    MigrationState *s = g_malloc0(sizeof(MigrationState));
+    s->state = MIGRATION_STATUS_NONE;
+    s->bandwidth_limit = MAX_THROTTLE;
+
+    return s;
+}
+
+void __migrate_init(void)
+{
+    int i;
+    migration_states = g_malloc0(sizeof(MigrationState*) * KVM_DIRTY_BITMAP_INIT_COUNT);
+
+    for (i = 0; i < KVM_DIRTY_BITMAP_INIT_COUNT; i++) {
+        migration_states[i] = migration_new();
+    }
+
+    migration_states_current = 0;
+    migration_states_count = KVM_DIRTY_BITMAP_INIT_COUNT;
 }
 
 MigrationState *migrate_init(const MigrationParams *params)
