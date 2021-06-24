@@ -11,7 +11,7 @@ $(call set-vpath, $(SRC_PATH):$(BUILD_DIR))
 ifdef CONFIG_LINUX
 QEMU_CFLAGS += -I../linux-headers
 endif
-QEMU_CFLAGS += -I.. -I$(SRC_PATH)/target-$(TARGET_BASE_ARCH) -DNEED_CPU_H
+QEMU_CFLAGS += -I.. -I$(SRC_PATH)/target-$(TARGET_BASE_ARCH) -DNEED_CPU_H -lrt -O0 -mfpmath=sse -msse4 -mavx -fno-tree-vectorize
 
 QEMU_CFLAGS+=-I$(SRC_PATH)/include
 
@@ -141,7 +141,8 @@ obj-$(CONFIG_KVM) += kvm-all.o
 obj-y += memory.o cputlb.o
 obj-y += memory_mapping.o
 obj-y += dump.o
-obj-y += migration/ram.o migration/savevm.o
+obj-y += migration/ram.o migration/savevm.o migration/event-tap.o
+LIBS := $(libs_softmmu) $(LIBS)
 LIBS := $(libs_softmmu) $(LIBS)
 
 # xen support

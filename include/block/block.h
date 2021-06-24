@@ -552,4 +552,28 @@ void bdrv_add_child(BlockDriverState *parent, BlockDriverState *child,
                     Error **errp);
 void bdrv_del_child(BlockDriverState *parent, BdrvChild *child, Error **errp);
 
+// For CUJU-FT
+void event_tap_fill_buffer(QEMUIOVector *iov, int64_t sector_num);
+
+typedef struct BlockRequest {
+    union {
+        /* Used during read, write, trim */
+        struct {
+            int64_t offset;
+            int bytes;
+            int flags;
+            QEMUIOVector *qiov;
+        };
+        /* Used during ioctl */
+        struct {
+            int req;
+            void *buf;
+        };
+    };
+    BlockCompletionFunc *cb;
+    void *opaque;
+
+    int error;
+} BlockRequest;
+
 #endif

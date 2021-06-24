@@ -42,6 +42,9 @@ struct QEMUBH {
     bool scheduled;
     bool idle;
     bool deleted;
+
+    // For CUJU-FT
+    bool mig_survive;
 };
 
 void aio_bh_schedule_oneshot(AioContext *ctx, QEMUBHFunc *cb, void *opaque)
@@ -87,6 +90,11 @@ void aio_bh_call(QEMUBH *bh)
     bh->cb(bh->opaque);
 }
 
+void qemu_bh_set_mig_survive(QEMUBH *bh, bool survive)
+{
+    bh->mig_survive = survive;
+}
+
 /* Multiple occurrences of aio_bh_poll cannot be called concurrently */
 int aio_bh_poll(AioContext *ctx)
 {
@@ -100,6 +108,11 @@ int aio_bh_poll(AioContext *ctx)
         /* Make sure that fetching bh happens before accessing its members */
         smp_read_barrier_depends();
         next = bh->next;
+
+        // For CUJU-FT
+        if (qemu_iohandler_is_ft_paused() && !bh->mig_survive)
+            continue;
+
         /* The atomic_xchg is paired with the one in qemu_bh_schedule.  The
          * implicit memory barrier ensures that the callback sees all writes
          * done by the scheduling thread.  It also ensures that the scheduling

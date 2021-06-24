@@ -92,6 +92,9 @@ struct kvm_memory_region {
 	__u64 memory_size; /* bytes */
 };
 
+// sync the one in kvm_host.h
+#define KVM_DIRTY_BITMAP_INIT_COUNT    2
+
 /* for KVM_SET_USER_MEMORY_REGION */
 struct kvm_userspace_memory_region {
 	__u32 slot;

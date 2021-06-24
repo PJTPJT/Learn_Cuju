@@ -89,6 +89,10 @@ int main(int argc, char **argv)
 #include "sysemu/dma.h"
 #include "audio/audio.h"
 #include "migration/migration.h"
+#include "migration/cuju-ft-trans-file.h"
+#include "migration/event-tap.h" 
+#include "migration/cuju-kvm-share-mem.h"
+
 #include "sysemu/cpus.h"
 #include "migration/colo.h"
 #include "sysemu/kvm.h"
@@ -123,6 +127,13 @@ int main(int argc, char **argv)
 #include "sysemu/replay.h"
 #include "qapi/qmp/qerror.h"
 #include "sysemu/iothread.h"
+#ifdef __linux__
+#include <pty.h>
+#include <malloc.h>
+
+#include <linux/ppdev.h>
+#include <linux/parport.h>
+#endif
 
 #define MAX_VIRTIO_CONSOLES 1
 #define MAX_SCLP_CONSOLES 1
@@ -198,6 +209,11 @@ static NotifierList machine_init_done_notifiers =
 bool xen_allowed;
 uint32_t xen_domid;
 enum xen_mode xen_mode = XEN_EMULATE;
+
+// for CUJU-FT
+int ft_join_port = 5000;
+int my_gft_id = -1;
+int ft_ram_conn_count = 1;
 
 static int has_defaults = 1;
 static int default_serial = 1;
@@ -718,6 +734,7 @@ static void runstate_init(void)
 void runstate_set(RunState new_state)
 {
     assert(new_state < RUN_STATE__MAX);
+    goto out;
 
     if (current_run_state == new_state) {
         return;
@@ -729,6 +746,7 @@ void runstate_set(RunState new_state)
                      RunState_lookup[new_state]);
         abort();
     }
+out:
     trace_runstate_set(new_state);
     current_run_state = new_state;
 }
@@ -2994,6 +3012,7 @@ static int global_init_func(void *opaque, QemuOpts *opts, Error **errp)
     return 0;
 }
 
+
 int main(int argc, char **argv, char **envp)
 {
     int i;
@@ -3016,6 +3035,7 @@ int main(int argc, char **argv, char **envp)
     const char *qtest_log = NULL;
     const char *pid_file = NULL;
     const char *incoming = NULL;
+    
     bool defconfig = true;
     bool userconfig = true;
     bool nographic = false;
@@ -3030,6 +3050,8 @@ int main(int argc, char **argv, char **envp)
     Error *main_loop_err = NULL;
     Error *err = NULL;
     bool list_data_dirs = false;
+
+    signal(SIGPIPE, SIG_IGN);
 
     module_call_init(MODULE_INIT_TRACE);
 
@@ -4112,6 +4134,9 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
+    // supress memory check abort.
+    mallopt(M_CHECK_ACTION, 0);
+
     cpu_exec_init_all();
 
     if (machine_class->hw_version) {
@@ -4467,6 +4492,8 @@ int main(int argc, char **argv, char **envp)
     blk_mig_init();
     ram_mig_init();
 
+    event_tap_init();
+
     /* If the currently selected machine wishes to override the units-per-bus
      * property of its default HBA interface type, do so now. */
     if (machine_class->units_per_default_bus) {
@@ -4680,6 +4707,18 @@ int main(int argc, char **argv, char **envp)
     }
 
     os_setup_post();
+
+#ifdef ft_debug_mode_enable
+    kvm_slots_dump();
+#endif
+    //__migrate_init();
+
+    //trans_ram_init();
+
+#ifdef KVM_SHARE_MEM
+    //kvm_share_mem_init(ram_size);
+#endif
+	printf("VM init finished\n");
 
     main_loop();
     replay_disable_events();
