@@ -86,10 +86,16 @@ static PostcopyState incoming_postcopy_state;
 
 int migration_states_count = 0;
 
+static MigrationState **migration_states;
+
 // At the time setting up FT, current will pointer to 2nd MigrationState.
 static int migration_states_current;
 
-static MigrationState **migration_states;
+MigrationState *migrate_by_index(int index)
+{
+    assert(index < migration_states_count);
+    return migration_states[index];
+}
 
 /* When we add fault tolerance, we could have several
    migrations at once.  For now we don't need to add

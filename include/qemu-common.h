@@ -151,4 +151,6 @@ void page_size_init(void);
  * returned. */
 bool dump_in_progress(void);
 
+void *gfn_to_hva(unsigned long gfn);
+
 #endif

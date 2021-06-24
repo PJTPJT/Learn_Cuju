@@ -4713,7 +4713,7 @@ int main(int argc, char **argv, char **envp)
 #endif
     __migrate_init();
 
-    //trans_ram_init();
+    trans_ram_init();
 
 #ifdef KVM_SHARE_MEM
     //kvm_share_mem_init(ram_size);

@@ -3744,4 +3744,19 @@ int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
     rcu_read_unlock();
     return ret;
 }
+void *gfn_to_hva(unsigned long gfn)
+{
+    hwaddr addr = gfn << TARGET_PAGE_BITS;
+    hwaddr addr1;
+    hwaddr l = 1;
+    MemoryRegion *mr;
+    uint8_t *ptr;
+
+    rcu_read_lock();
+    mr = address_space_translate(&address_space_memory, addr, &addr1, &l, true);
+    ptr = qemu_ram_ptr_length(mr->ram_block, addr1, &l);
+    rcu_read_unlock();
+
+    return ptr;
+}
 #endif
